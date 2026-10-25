@@ -1,5 +1,10 @@
 import Foundation
 
+enum DemoVideoTiming {
+    static let framesPerSecond: Int32 = 60
+    static let frameDuration = 1.0 / Double(framesPerSecond)
+}
+
 struct DemoPoint: Codable, Equatable {
     var x: Double
     var y: Double
@@ -36,6 +41,17 @@ struct DemoStep: Codable, Identifiable, Equatable {
     var nextStepID: String?
 }
 
+/// The edit keeps source timestamps intact; only the exported movie starts at zero.
+struct DemoVideoRange: Equatable {
+    var start: Double
+    var end: Double
+    var duration: Double { max(0, end - start) }
+    var frameCount: Int { max(1, Int(ceil(duration * Double(DemoVideoTiming.framesPerSecond) - 0.0000001))) }
+    var lastFrameTime: Double { start + Double(frameCount - 1) * DemoVideoTiming.frameDuration }
+    func sourceTime(forOutputTime time: Double) -> Double { start + min(duration, max(0, time)) }
+    func clampedPreviewTime(_ time: Double) -> Double { min(lastFrameTime, max(start, time)) }
+}
+
 struct DemoProject: Codable, Equatable {
     var version = 1
     var title = "未命名演示"
@@ -53,6 +69,22 @@ struct DemoProject: Codable, Equatable {
     var showClicks = true
     var zoomAmount: Double = 1.8
     var recordingNotice: String?
+    // Optional keys keep projects written before trimming compatible with synthesized Codable.
+    var trimStart: Double?
+    var trimEnd: Double?
+
+    func videoRange(limitedTo availableDuration: Double? = nil) -> DemoVideoRange {
+        let recorded = duration.isFinite ? max(0, duration) : 0
+        let available = availableDuration.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? recorded
+        let total = min(recorded, available)
+        let requestedStart = trimStart.flatMap { $0.isFinite ? $0 : nil } ?? 0
+        let requestedEnd = trimEnd.flatMap { $0.isFinite ? $0 : nil } ?? total
+        let start = min(total, max(0, requestedStart))
+        let end = min(total, max(0, requestedEnd))
+        // Invalid hand-edited trim metadata must never make a valid source unusable.
+        guard end > start else { return DemoVideoRange(start: 0, end: total) }
+        return DemoVideoRange(start: start, end: end)
+    }
 
     static func load(from directory: URL) throws -> DemoProject {
         let data = try Data(contentsOf: directory.appendingPathComponent("project.json"))

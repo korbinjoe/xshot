@@ -11,6 +11,7 @@ final class HomeWindow: NSWindow {
         backgroundColor = .windowBackgroundColor
         isMovableByWindowBackground = true
         isReleasedWhenClosed = false
+        level = .normal
         tabbingMode = .disallowed
         contentView = HomeContentView(onCapture: onCapture, onOpen: onOpen, onDemo: onDemo, onPermissions: onPermissions)
         center()
@@ -52,9 +53,9 @@ private final class HomeContentView: NSView {
         header.alignment = .centerY
         header.spacing = 16
 
-        let capture = HomeActionButton(title: "框选截图", detail: "拖动选择区域，Enter 进入标注", symbol: "viewfinder", shortcut: "⌥ X", primary: true, onPress: onCapture)
+        let capture = HomeActionButton(title: "截图", detail: "单击选择窗口，或拖动框选区域", symbol: "viewfinder", shortcut: "⌥ X", primary: true, onPress: onCapture)
         capture.keyEquivalent = "\r"
-        capture.setAccessibilityLabel("框选截图，快捷键 Option X")
+        capture.setAccessibilityLabel("截图：单击选择窗口或拖动框选，快捷键 Option X")
         let open = HomeActionButton(title: "打开图片…", detail: "为已有图片添加标注", symbol: "photo", shortcut: "⌘ O", primary: false, onPress: onOpen)
         open.setAccessibilityLabel("打开图片")
         let demo = HomeActionButton(title: "产品演示", detail: "自动聚焦录屏，也能制作可点击步骤", symbol: "play.rectangle", shortcut: "⌥ R", primary: false, onPress: onDemo)

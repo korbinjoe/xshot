@@ -9,17 +9,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shortcut: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?
     private var demoShortcut: EventHotKeyRef?
+    private var pauseShortcut: EventHotKeyRef?
     private var demoRecorder: DemoRecordingController?
     private var demoStudios: [DemoStudioWindowController] = []
     private var terminatingAfterRecording = false
     private var exportsPendingTermination: [DemoStudioWindowController] = []
     private var editors: [EditorWindowController] = []
     private var pins: [PinWindowController] = []
+    private let workspaceWindows = WorkspaceWindowCoordinator()
     private lazy var capture = CaptureCoordinator { [weak self] image in self?.openEditor(image) }
+
+    private var managedWorkspaceWindows: [NSWindow] {
+        [homeWindow].compactMap { $0 } + editors.compactMap(\.window) + demoStudios.compactMap(\.window) + pins.compactMap(\.window)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let icon = BrandImages.applicationIcon() { NSApp.applicationIconImage = icon }
         NotificationCenter.default.addObserver(self, selector: #selector(windowDidClose(_:)), name: NSWindow.willCloseNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(documentDidBecomeKey(_:)), name: NSWindow.didBecomeKeyNotification, object: nil)
         setupMenu()
         setupStatusItem()
         setupHome()
@@ -36,8 +43,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        showHome(nil)
-        return true
+        if demoRecorder?.isRecordingFlowActive == true {
+            demoRecorder?.revealRecordingControls()
+        } else if let document = workspaceWindows.preferredDocument(
+            in: editors.compactMap(\.window) + demoStudios.compactMap(\.window), orderedWindows: sender.orderedWindows
+        ) {
+            homeWindow.orderOut(nil)
+            sender.activate(ignoringOtherApps: true)
+            document.deminiaturize(nil)
+            document.makeKeyAndOrderFront(nil)
+        } else { showHome(nil) }
+        // We handled the target window; prevent AppKit from ordering every old
+        // XShot window forward as part of its default Dock-reopen behavior.
+        return false
     }
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
         if URL(fileURLWithPath: filename).pathExtension == "xshotdemo" { openDemo(at: URL(fileURLWithPath: filename)); return true }
@@ -59,10 +77,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appItem)
         let fileItem = NSMenuItem()
         let fileMenu = NSMenu(title: "文件")
-        let shot = fileMenu.addItem(withTitle: "框选截图", action: #selector(startCapture(_:)), keyEquivalent: "x")
+        let shot = fileMenu.addItem(withTitle: "截图（窗口 / 区域 / 整屏）", action: #selector(startCapture(_:)), keyEquivalent: "x")
         shot.keyEquivalentModifierMask = [.option]
         let demo = fileMenu.addItem(withTitle: "产品演示…", action: #selector(showDemo(_:)), keyEquivalent: "r")
         demo.keyEquivalentModifierMask = [.option]
+        let pause = fileMenu.addItem(withTitle: "暂停 / 继续录制", action: #selector(pauseDemo(_:)), keyEquivalent: "p")
+        pause.keyEquivalentModifierMask = [.option]
         let openDemo = fileMenu.addItem(withTitle: "打开演示项目…", action: #selector(openDemoProject(_:)), keyEquivalent: "o")
         openDemo.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(withTitle: "打开图片…", action: #selector(openImage(_:)), keyEquivalent: "o")
@@ -89,10 +109,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.image = BrandImages.menuBar()
             ?? NSImage(systemSymbolName: "viewfinder", accessibilityDescription: "XShot 截图")
         statusItem.button?.setAccessibilityLabel("XShot")
-        statusItem.button?.toolTip = "XShot · 框选截图 ⌥X"
+        statusItem.button?.toolTip = "XShot · 截图 ⌥X · 单击窗口或拖动框选"
         let menu = NSMenu()
-        menu.addItem(withTitle: "框选截图  ⌥X", action: #selector(startCapture(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "截图（窗口 / 区域 / 整屏）  ⌥X", action: #selector(startCapture(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "产品演示 / 完成录制  ⌥R", action: #selector(showDemo(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "暂停 / 继续录制  ⌥P", action: #selector(pauseDemo(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "打开演示项目…", action: #selector(openDemoProject(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "打开图片…", action: #selector(openImage(_:)), keyEquivalent: "")
         menu.addItem(.separator())
@@ -121,9 +142,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var hotkey = EventHotKeyID()
             guard GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &hotkey) == noErr else { return OSStatus(eventNotHandledErr) }
             let id = hotkey.id
-            guard hotkey.signature == 0x58534854, id == 1 || id == 2 else { return OSStatus(eventNotHandledErr) }
+            guard hotkey.signature == 0x58534854, id == 1 || id == 2 || id == 3 else { return OSStatus(eventNotHandledErr) }
             DispatchQueue.main.async {
-                if id == 2 { delegate.showDemo(nil) } else { delegate.startCapture(nil) }
+                if id == 3 { delegate.pauseDemo(nil) }
+                else if id == 2 { delegate.showDemo(nil) } else { delegate.startCapture(nil) }
             }
             return noErr
         }, 1, &type, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
@@ -133,10 +155,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let demoResult = RegisterEventHotKey(UInt32(kVK_ANSI_R), UInt32(optionKey), EventHotKeyID(signature: signature, id: 2), GetApplicationEventTarget(), 0, &demoShortcut)
         if demoResult != noErr { statusItem.button?.toolTip = (statusItem.button?.toolTip ?? "XShot") + " · ⌥R 被占用，请从菜单栏打开产品演示" }
+        let pauseResult = RegisterEventHotKey(UInt32(kVK_ANSI_P), UInt32(optionKey), EventHotKeyID(signature: signature, id: 3), GetApplicationEventTarget(), 0, &pauseShortcut)
+        if pauseResult != noErr { statusItem.button?.toolTip = (statusItem.button?.toolTip ?? "XShot") + " · ⌥P 被占用，请使用录制控制器暂停" }
     }
 
     @objc func startCapture(_ sender: Any?) {
-        guard demoRecorder?.isRecording != true else { return }
+        guard demoRecorder?.isRecordingFlowActive != true else { return }
         capture.start { [weak self] in self?.homeWindow.orderOut(nil) }
     }
 
@@ -144,9 +168,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if demoRecorder == nil {
             let controller = DemoRecordingController()
             controller.onOpenProject = { [weak self] in self?.openDemoProject(nil) }
+            controller.onOpenRecent = { [weak self] url in self?.openDemo(at: url) }
+            controller.onWillBeginCapture = { [weak self] in
+                guard let self else { return }
+                self.workspaceWindows.beginRecording(windows: self.managedWorkspaceWindows,
+                    orderedWindows: NSApp.orderedWindows, keyWindow: NSApp.keyWindow)
+            }
+            controller.onCapturePresentationCancelled = { [weak self] in self?.workspaceWindows.restoreAfterCancellation() }
             controller.onComplete = { [weak self] project, directory in
                 guard let self, !self.terminatingAfterRecording else { return }
-                self.openDemoStudio(project: project, directory: directory)
+                self.openDemoStudio(project: project, directory: directory, completingRecording: true)
             }
             controller.onRecordingChanged = { [weak self, weak controller] recording in
                 guard let self else { return }
@@ -171,6 +202,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         demoRecorder?.showOrStop()
     }
 
+    @objc func pauseDemo(_ sender: Any?) { demoRecorder?.togglePause() }
+
     @objc func openDemoProject(_ sender: Any?) {
         NSApp.activate(ignoringOtherApps: true)
         let panel = NSOpenPanel()
@@ -187,11 +220,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         catch { let alert = NSAlert(error: error); alert.messageText = "无法打开演示项目"; alert.runModal() }
     }
 
-    private func openDemoStudio(project: DemoProject, directory: URL) {
+    private func openDemoStudio(project: DemoProject, directory: URL, completingRecording: Bool = false) {
         let canonical = directory.standardizedFileURL.resolvingSymlinksInPath()
         if let existing = demoStudios.first(where: {
             $0.projectDirectory.standardizedFileURL.resolvingSymlinksInPath() == canonical
         }) {
+            homeWindow.orderOut(nil)
+            if completingRecording, let window = existing.window {
+                workspaceWindows.completeRecording(windows: managedWorkspaceWindows, keeping: window)
+            }
             NSApp.activate(ignoringOtherApps: true)
             existing.showWindow(nil)
             existing.window?.makeKeyAndOrderFront(nil)
@@ -199,6 +236,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let controller = DemoStudioWindowController(project: project, directory: directory) { [weak self] in self?.showDemo(nil) }
         demoStudios.append(controller)
+        homeWindow.orderOut(nil)
+        if completingRecording, let window = controller.window {
+            workspaceWindows.completeRecording(windows: managedWorkspaceWindows, keeping: window)
+        }
         NSApp.activate(ignoringOtherApps: true)
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
@@ -221,6 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             demoRecorder?.showOrStop()
             return .terminateLater
         }
+        demoRecorder?.cancelPreparationForTermination()
         guard !exporting.isEmpty else { return .terminateNow }
         Task {
             for studio in exporting { await studio.cancelPendingExport() }
@@ -234,6 +276,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
     @objc func showHome(_ sender: Any?) {
+        if demoRecorder?.isRecordingFlowActive == true {
+            demoRecorder?.revealRecordingControls()
+            return
+        }
         NSApp.activate(ignoringOtherApps: true)
         homeWindow.makeKeyAndOrderFront(nil)
     }
@@ -253,6 +299,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pin.showWindow(nil)
         }
         editors.append(editor)
+        homeWindow.orderOut(nil)
         NSApp.activate(ignoringOtherApps: true)
         editor.showWindow(nil)
         editor.window?.makeKeyAndOrderFront(nil)
@@ -265,9 +312,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func windowDidClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
+        workspaceWindows.forget(window)
         editors.removeAll { $0.window === window }
         pins.removeAll { $0.window === window }
         demoStudios.removeAll { $0.window === window }
+    }
+    @objc private func documentDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              editors.contains(where: { $0.window === window }) || demoStudios.contains(where: { $0.window === window }) else { return }
+        workspaceWindows.documentBecameKey(window)
     }
     @objc func openPermissions(_ sender: Any?) { CaptureCoordinator.openPrivacySettings() }
     @objc func showAbout() {

@@ -4,7 +4,7 @@ PROJECT_DIR="${0:A:h:h}"
 APP_DIR="$PROJECT_DIR/dist/XShot.app"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 swiftc -swift-version 5 -O -whole-module-optimization -target arm64-apple-macos14.0 \
-  -framework AppKit -framework ScreenCaptureKit -framework Carbon -framework AVFoundation -framework WebKit -framework CoreImage \
+  -framework AppKit -framework ScreenCaptureKit -framework Carbon -framework AVFoundation -framework WebKit -framework CoreImage -framework Metal -framework QuartzCore \
   "$PROJECT_DIR"/Sources/XShot/*.swift -o "$APP_DIR/Contents/MacOS/XShot"
 cp "$PROJECT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$PROJECT_DIR/Resources/XShot.icns" "$APP_DIR/Contents/Resources/XShot.icns"

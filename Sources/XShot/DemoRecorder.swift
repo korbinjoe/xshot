@@ -14,14 +14,57 @@ final class DemoRecorder: NSObject {
         let frame: CGRect
     }
 
+    struct WindowChoice {
+        let id: CGWindowID
+        let name: String
+        let appName: String
+        let frame: CGRect
+        let displayID: CGDirectDisplayID
+        let processID: pid_t
+    }
+
+    enum CaptureSource {
+        case display(DisplayChoice)
+        case window(WindowChoice)
+        /// The rectangle uses AppKit global coordinates and is clipped to its display.
+        case region(display: DisplayChoice, rect: CGRect)
+
+        var name: String {
+            switch self {
+            case .display(let value): return value.name
+            case .window(let value): return value.name
+            case .region: return "自选区域"
+            }
+        }
+        var frame: CGRect {
+            switch self {
+            case .display(let value): return value.frame
+            case .window(let value): return value.frame
+            case .region(let display, let rect): return rect.standardized.intersection(display.frame)
+            }
+        }
+        var displayID: CGDirectDisplayID {
+            switch self {
+            case .display(let value), .region(let value, _): return value.id
+            case .window(let value): return value.displayID
+            }
+        }
+        var ownerPID: pid_t? {
+            if case .window(let value) = self { return value.processID }
+            return nil
+        }
+    }
+
     enum RecordingError: LocalizedError {
-        case alreadyRecording, displayUnavailable, directoryNotEmpty, noFrames, notRecording
+        case alreadyRecording, displayUnavailable, windowUnavailable, invalidRegion, directoryNotEmpty, noFrames, notRecording
         case cannotWrite(String)
 
         var errorDescription: String? {
             switch self {
             case .alreadyRecording: return "已有录制正在进行。"
             case .displayUnavailable: return "所选显示器已断开，请重新选择。"
+            case .windowUnavailable: return "所选窗口已关闭或无法录制，请重新选择。"
+            case .invalidRegion: return "录制区域太小或已移出所选显示器，请重新选择。"
             case .directoryNotEmpty: return "项目目录已有录制内容，请创建新项目。"
             case .noFrames: return "没有收到屏幕画面。请检查屏幕录制权限后重试。"
             case .notRecording: return "当前没有正在进行的录制。"
@@ -33,12 +76,18 @@ final class DemoRecorder: NSObject {
     var onProgress: ((Double, Int) -> Void)?
     var onFailure: ((Error) -> Void)?
     private(set) var interactionWarning: String?
+    private(set) var isPaused = false
+    var captureFrame: CGRect { currentCaptureFrame() }
 
     private var stream: SCStream?
     private var sink: DemoRecordingSink?
     private var timer: Timer?
     private var mouseMonitor: Any?
     private var displayFrame = CGRect.zero
+    private var captureWindowID: CGWindowID?
+    private var captureCanvasSize = CGSize.zero
+    private var pauseStarted: Double?
+    private var pausedDuration = 0.0
     private var startTime = 0.0
     private var eventClockOffset = 0.0
     private var progressTicks = 0
@@ -58,13 +107,41 @@ final class DemoRecorder: NSObject {
         }
     }
 
+    static func availableWindows() async throws -> [WindowChoice] {
+        let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+        let ownID = Bundle.main.bundleIdentifier
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        return content.windows.compactMap { window in
+            guard window.windowLayer == 0, window.isOnScreen,
+                  window.frame.width >= 80, window.frame.height >= 60,
+                  let app = window.owningApplication, app.processID != ownPID,
+                  ownID == nil || app.bundleIdentifier != ownID,
+                  let display = content.displays.max(by: {
+                      intersectionArea(window.frame, $0.frame) < intersectionArea(window.frame, $1.frame)
+                  }) else { return nil }
+            let title = window.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return WindowChoice(id: window.windowID, name: title.isEmpty ? app.applicationName : "\(app.applicationName) · \(title)",
+                                appName: app.applicationName, frame: appKitFrame(for: window.frame),
+                                displayID: display.displayID, processID: app.processID)
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
     func start(displayID: CGDirectDisplayID, directory: URL) async throws {
+        guard let display = try await Self.availableDisplays().first(where: { $0.id == displayID }) else {
+            throw RecordingError.displayUnavailable
+        }
+        try await start(source: .display(display), directory: directory)
+    }
+
+    func start(source: CaptureSource, directory: URL) async throws {
         guard phase == .idle else { throw RecordingError.alreadyRecording }
         let operationID = UUID()
         lifecycleID = operationID
         phase = .starting
         reportedFailure = false
         interactionWarning = nil
+        isPaused = false; pauseStarted = nil; pausedDuration = 0
+        captureWindowID = nil
         stepCount = 0
         progressTicks = 0
         var ownedStream: SCStream?
@@ -72,7 +149,7 @@ final class DemoRecorder: NSObject {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             guard lifecycleID == operationID, phase == .starting else { throw CancellationError() }
-            guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
+            guard let display = content.displays.first(where: { $0.displayID == source.displayID }) else {
                 throw RecordingError.displayUnavailable
             }
             let existingNames = ["recording.mov", "project.json", "steps"]
@@ -87,16 +164,38 @@ final class DemoRecorder: NSObject {
                 $0.processID == ProcessInfo.processInfo.processIdentifier ||
                 (ownID != nil && $0.bundleIdentifier == ownID)
             }
-            let filter = SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: [])
-            let screen = NSScreen.screens.first { Self.screenID($0) == displayID }
-            displayFrame = screen?.frame ?? Self.appKitFrame(for: display.frame)
+            let screen = NSScreen.screens.first { Self.screenID($0) == source.displayID }
+            let fullDisplayFrame = screen?.frame ?? Self.appKitFrame(for: display.frame)
+            let filter: SCContentFilter
+            var sourceRect: CGRect?
+            switch source {
+            case .display:
+                filter = SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: [])
+                displayFrame = fullDisplayFrame
+            case .region(_, let requestedRect):
+                let rect = requestedRect.standardized.intersection(fullDisplayFrame)
+                guard !rect.isNull, rect.width >= 24, rect.height >= 24 else { throw RecordingError.invalidRegion }
+                filter = SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: [])
+                displayFrame = rect
+                sourceRect = CGRect(x: rect.minX - fullDisplayFrame.minX, y: fullDisplayFrame.maxY - rect.maxY,
+                                    width: rect.width, height: rect.height)
+            case .window(let choice):
+                guard let window = content.windows.first(where: { $0.windowID == choice.id }),
+                      let app = window.owningApplication,
+                      !excluded.contains(where: { $0.processID == app.processID }) else { throw RecordingError.windowUnavailable }
+                filter = SCContentFilter(desktopIndependentWindow: window)
+                displayFrame = Self.appKitFrame(for: window.frame)
+                captureWindowID = window.windowID
+            }
             // ScreenCaptureKit's filter describes the actual capture pixels;
             // display mode APIs may report logical dimensions on Retina screens.
-            let sourceWidth = max(2, Int((filter.contentRect.width * CGFloat(filter.pointPixelScale)).rounded()))
-            let sourceHeight = max(2, Int((filter.contentRect.height * CGFloat(filter.pointPixelScale)).rounded()))
+            let contentSize = sourceRect?.size ?? filter.contentRect.size
+            let sourceWidth = max(2, Int((contentSize.width * CGFloat(filter.pointPixelScale)).rounded()))
+            let sourceHeight = max(2, Int((contentSize.height * CGFloat(filter.pointPixelScale)).rounded()))
             let scale = min(1.0, 1920.0 / Double(sourceWidth))
             let width = max(2, Int(Double(sourceWidth) * scale) / 2 * 2)
             let height = max(2, Int(Double(sourceHeight) * scale) / 2 * 2)
+            captureCanvasSize = CGSize(width: width, height: height)
             let output = try DemoRecordingSink(directory: directory, width: width, height: height)
             ownedSink = output
             output.onFailure = { [weak self] error in
@@ -121,13 +220,15 @@ final class DemoRecorder: NSObject {
             let config = SCStreamConfiguration()
             config.width = width
             config.height = height
-            config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+            config.minimumFrameInterval = CMTime(value: 1, timescale: DemoVideoTiming.framesPerSecond)
             config.queueDepth = 5
             config.pixelFormat = kCVPixelFormatType_32BGRA
             config.showsCursor = false
             config.capturesAudio = false
             config.scalesToFit = true
             config.preservesAspectRatio = true
+            config.ignoreShadowsSingleWindow = true
+            if let sourceRect { config.sourceRect = sourceRect }
             config.colorSpaceName = CGColorSpace.sRGB
             let capture = SCStream(filter: filter, configuration: config, delegate: output)
             ownedStream = capture
@@ -136,6 +237,9 @@ final class DemoRecorder: NSObject {
             startTime = Self.hostSeconds()
             eventClockOffset = startTime - ProcessInfo.processInfo.systemUptime
             try await capture.startCapture()
+            // Starting a stream does not establish that it delivers usable screen pixels.
+            // Keep the UI in its preparing state until the first encoded image arrives.
+            startTime = try await output.waitForFirstFrame(timeout: 8)
             guard lifecycleID == operationID, phase == .starting else { throw CancellationError() }
             phase = .recording
             beginInteractions()
@@ -167,6 +271,7 @@ final class DemoRecorder: NSObject {
             stream = nil
             sink = nil
             phase = .idle
+            isPaused = false; pauseStarted = nil
         }
         var project = try await output.finish(endTime: endTime)
         if let stopError {
@@ -192,37 +297,57 @@ final class DemoRecorder: NSObject {
             stream = nil
             sink = nil
             phase = .idle
+            isPaused = false; pauseStarted = nil
         }
+    }
+
+    func pause() {
+        guard phase == .recording, !isPaused else { return }
+        let now = Self.hostSeconds()
+        isPaused = true; pauseStarted = now
+        sink?.pause(hostTime: now)
+        onProgress?(max(0, now - startTime - pausedDuration), stepCount)
+    }
+
+    func resume() {
+        guard phase == .recording, isPaused else { return }
+        let now = Self.hostSeconds()
+        if let pauseStarted { pausedDuration += max(0, now - pauseStarted) }
+        self.pauseStarted = nil; isPaused = false
+        sink?.resume(hostTime: now)
     }
 
     private func beginInteractions() {
         // This monitor deliberately omits keyboard events and this app's own UI.
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
             MainActor.assumeIsolated {
-                guard let self, self.phase == .recording else { return }
-                var point = NSEvent.mouseLocation
+                guard let self, self.phase == .recording, !self.isPaused else { return }
+                // A global monitor can be delivered after the pointer has moved.
+                // Keep the event's own position even when it has no CGEvent.
+                var point = event.locationInWindow
+                if let window = event.window { point = window.convertPoint(toScreen: point) }
                 if let cgEvent = event.cgEvent {
                     let quartz = cgEvent.location
                     let primaryHeight = NSScreen.screens.first?.frame.height ?? self.displayFrame.height
                     point = NSPoint(x: quartz.x, y: primaryHeight - quartz.y)
                 }
-                guard let position = self.normalizedPosition(point) else { return }
+                guard self.isCapturedWindowFrontmost(at: point), let position = self.normalizedPosition(point) else { return }
                 self.sink?.recordClick(hostTime: event.timestamp + self.eventClockOffset, position: position)
             }
         }
         if mouseMonitor == nil {
             interactionWarning = "无法读取其他应用的点击；视频仍会保存，可手动添加演示步骤。"
         }
-        timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+        timer = Timer(timeInterval: DemoVideoTiming.frameDuration, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.phase == .recording else { return }
                 let now = Self.hostSeconds()
-                if let position = self.normalizedPosition(NSEvent.mouseLocation) {
+                if !self.isPaused, let position = self.normalizedPosition(NSEvent.mouseLocation) {
                     self.sink?.recordPointer(hostTime: now, position: position)
                 }
                 self.progressTicks += 1
-                if self.progressTicks % 6 == 0 {
-                    self.onProgress?(max(0, now - self.startTime), self.stepCount)
+                if self.progressTicks % 12 == 0 {
+                    self.onProgress?(max(0, (self.pauseStarted ?? now) - self.startTime - self.pausedDuration), self.stepCount)
                 }
             }
         }
@@ -243,9 +368,46 @@ final class DemoRecorder: NSObject {
     }
 
     private func normalizedPosition(_ point: NSPoint) -> DemoPoint? {
-        guard displayFrame.contains(point), displayFrame.width > 0, displayFrame.height > 0 else { return nil }
-        return DemoPoint(x: (point.x - displayFrame.minX) / displayFrame.width,
-                         y: (displayFrame.maxY - point.y) / displayFrame.height).clamped
+        let frame = currentCaptureFrame()
+        guard frame.contains(point), frame.width > 0, frame.height > 0 else { return nil }
+        var x = (point.x - frame.minX) / frame.width
+        var y = (frame.maxY - point.y) / frame.height
+        if captureWindowID != nil, captureCanvasSize.width > 0, captureCanvasSize.height > 0 {
+            // The encoded canvas remains fixed when a window is resized. Match the
+            // aspect-fit window image inside it, including any new letterboxing.
+            let fit = min(captureCanvasSize.width / frame.width, captureCanvasSize.height / frame.height)
+            let width = frame.width * fit, height = frame.height * fit
+            x = ((captureCanvasSize.width - width) / 2 + x * width) / captureCanvasSize.width
+            y = ((captureCanvasSize.height - height) / 2 + y * height) / captureCanvasSize.height
+        }
+        return DemoPoint(x: x, y: y).clamped
+    }
+
+    private func currentCaptureFrame() -> CGRect {
+        guard let captureWindowID,
+              let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, captureWindowID) as? [[String: Any]])?.first,
+              let bounds = info[kCGWindowBounds as String] as? [String: Any],
+              let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary), frame.width > 0, frame.height > 0 else { return displayFrame }
+        return Self.appKitFrame(for: frame)
+    }
+
+    private func isCapturedWindowFrontmost(at point: NSPoint) -> Bool {
+        guard let captureWindowID else { return true }
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return true }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        for info in windows {
+            guard (info[kCGWindowLayer as String] as? Int) == 0,
+                  (info[kCGWindowOwnerPID as String] as? pid_t) != ownPID,
+                  let bounds = info[kCGWindowBounds as String] as? [String: Any],
+                  let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary), Self.appKitFrame(for: frame).contains(point) else { continue }
+            return (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value == captureWindowID
+        }
+        return false
+    }
+
+    private static func intersectionArea(_ first: CGRect, _ second: CGRect) -> CGFloat {
+        let rect = first.intersection(second)
+        return rect.isNull ? 0 : rect.width * rect.height
     }
 
     private static func hostSeconds() -> Double { CMClockGetTime(CMClockGetHostTimeClock()).seconds }
@@ -256,6 +418,44 @@ final class DemoRecorder: NSObject {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? quartzFrame.height
         return CGRect(x: quartzFrame.minX, y: primaryHeight - quartzFrame.maxY,
                       width: quartzFrame.width, height: quartzFrame.height)
+    }
+}
+
+/// Converts both screen PTS and input-event host times onto the same edited clock.
+/// Pause intervals stay in host coordinates so late-arriving pre-pause frames
+/// cannot accidentally be shifted by a pause that happened after their PTS.
+struct DemoRecordingTimeline {
+    private var pauses: [(start: Double, end: Double?)] = []
+
+    mutating func pause(at hostTime: Double) {
+        guard hostTime.isFinite, pauses.last?.end != nil || pauses.isEmpty else { return }
+        pauses.append((hostTime, nil))
+    }
+
+    mutating func resume(at hostTime: Double) {
+        guard hostTime.isFinite, let last = pauses.last, last.end == nil else { return }
+        pauses[pauses.count - 1].end = max(last.start, hostTime)
+    }
+
+    func time(for hostTime: Double) -> Double? {
+        guard hostTime.isFinite else { return nil }
+        var removed = 0.0
+        for pause in pauses {
+            if hostTime < pause.start { break }
+            guard let end = pause.end, hostTime >= end else { return nil }
+            removed += end - pause.start
+        }
+        return hostTime - removed
+    }
+
+    func endTime(for hostTime: Double) -> Double {
+        var removed = 0.0
+        for pause in pauses {
+            if hostTime < pause.start { break }
+            guard let end = pause.end, hostTime >= end else { return pause.start - removed }
+            removed += end - pause.start
+        }
+        return hostTime - removed
     }
 }
 
@@ -287,6 +487,7 @@ final class DemoRecordingSink: NSObject, SCStreamOutput, SCStreamDelegate, @unch
     private var closed = false
     private var failure: Error?
     private var notices: [String] = []
+    private var timeline = DemoRecordingTimeline()
     // Only accessed on the serial image queue.
     private var writtenSteps: [(Int, DemoStep)] = []
     private var imageError: Error?
@@ -301,9 +502,9 @@ final class DemoRecordingSink: NSObject, SCStreamOutput, SCStreamDelegate, @unch
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
             AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: min(12_000_000, width * height * 6),
-                AVVideoExpectedSourceFrameRateKey: 30,
-                AVVideoMaxKeyFrameIntervalKey: 60
+                AVVideoAverageBitRateKey: min(20_000_000, width * height * 8),
+                AVVideoExpectedSourceFrameRateKey: DemoVideoTiming.framesPerSecond,
+                AVVideoMaxKeyFrameIntervalKey: DemoVideoTiming.framesPerSecond * 2
             ]
         ])
         input.expectsMediaDataInRealTime = true
@@ -335,20 +536,32 @@ final class DemoRecordingSink: NSObject, SCStreamOutput, SCStreamDelegate, @unch
     func appendFrame(_ sampleBuffer: CMSampleBuffer) {
         dispatchPrecondition(condition: .onQueue(queue))
         guard !closed, failure == nil else { return }
-        let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        guard time.isNumeric, time.seconds.isFinite else { return }
+        let originalTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard originalTime.isNumeric, let adjusted = timeline.time(for: originalTime.seconds) else { return }
+        let time = CMTime(seconds: adjusted, preferredTimescale: 1_000_000_000)
+        let sample: CMSampleBuffer
+        if abs(adjusted - originalTime.seconds) < 0.0000001 { sample = sampleBuffer }
+        else {
+            var timing = CMSampleTimingInfo(duration: CMSampleBufferGetDuration(sampleBuffer),
+                                            presentationTimeStamp: time, decodeTimeStamp: .invalid)
+            var retimed: CMSampleBuffer?
+            guard CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault, sampleBuffer: sampleBuffer,
+                sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleBufferOut: &retimed) == noErr,
+                  let retimed else { fail(DemoRecorder.RecordingError.cannotWrite("无法更新暂停后的画面时间")); return }
+            sample = retimed
+        }
         if firstTime == nil {
             guard writer.startWriting() else { fail(writer.error ?? DemoRecorder.RecordingError.cannotWrite("无法开始写入")); return }
             writer.startSession(atSourceTime: time)
             firstTime = time.seconds
         }
         if input.isReadyForMoreMediaData, lastTime == nil || time.seconds > lastTime! {
-            if input.append(sampleBuffer) { lastTime = time.seconds }
+            if input.append(sample) { lastTime = time.seconds }
             else { fail(writer.error ?? DemoRecorder.RecordingError.cannotWrite("视频帧写入失败")); return }
         }
         // Retaining queueDepth original ScreenCaptureKit surfaces exhausts its
         // server-side pool and stalls new frames. Cache our own pixels instead.
-        if let snapshot = copyForSnapshot(sampleBuffer) {
+        if let snapshot = copyForSnapshot(sample) {
             recentFrames.append((time.seconds, snapshot))
             if recentFrames.count > 5 { recentFrames.removeFirst(recentFrames.count - 5) }
         } else { warn("部分步骤截图未能缓存；原始录屏继续保存，可稍后补充步骤。") }
@@ -361,27 +574,26 @@ final class DemoRecordingSink: NSObject, SCStreamOutput, SCStreamDelegate, @unch
     func recordPointer(hostTime: Double, position: DemoPoint) {
         guard hostTime.isFinite, position.x.isFinite, position.y.isFinite else { return }
         queue.async {
-            guard !self.closed else { return }
-            self.pointers.append((hostTime, position))
+            guard !self.closed, let time = self.timeline.time(for: hostTime) else { return }
+            self.pointers.append((time, position))
         }
     }
 
     func recordClick(hostTime: Double, position: DemoPoint) {
         guard hostTime.isFinite, position.x.isFinite, position.y.isFinite else { return }
         queue.async {
-            guard !self.closed, self.failure == nil else { return }
-            if let previous = self.clicks.last {
-                let distance = hypot(position.x - previous.1.x, position.y - previous.1.y)
-                if hostTime - previous.0 < 0.12 || (hostTime - previous.0 < 0.35 && distance < 0.018) { return }
-            }
-            self.clicks.append((hostTime, position))
+            guard !self.closed, self.failure == nil, let time = self.timeline.time(for: hostTime) else { return }
+            // Each global mouseDown is a real input event. Timing/distance
+            // thresholds erase fast target changes and system double/triple clicks.
+            // Step-image budgets below must never discard this interaction track.
+            self.clicks.append((time, position))
             guard self.snapshotCount < 199 else {
                 self.warn("自动步骤已达到 200 步上限；原始录屏与操作轨迹继续保存。")
                 return
             }
             // Use the newest frame at or before the input event, never a frame
             // already showing the result of that click.
-            guard let frame = self.recentFrames.last(where: { $0.0 <= hostTime }) else {
+            guard let frame = self.recentFrames.last(where: { $0.0 <= time }) else {
                 self.warn("部分点击未匹配到点击前画面；原始录屏与点击位置已保留，可手动补充步骤。")
                 return
             }
@@ -390,6 +602,26 @@ final class DemoRecordingSink: NSObject, SCStreamOutput, SCStreamDelegate, @unch
                 return
             }
             self.enqueueSnapshot(frame.1, position: position, final: false)
+        }
+    }
+
+    func pause(hostTime: Double) { queue.async { self.timeline.pause(at: hostTime) } }
+    func resume(hostTime: Double) { queue.async { self.timeline.resume(at: hostTime) } }
+
+    func waitForFirstFrame(timeout: Double) async throws -> Double {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while true {
+            let state: Result<Double?, Error> = await withCheckedContinuation { continuation in
+                queue.async {
+                    if let first = self.firstTime, self.lastTime != nil { continuation.resume(returning: .success(first)) }
+                    else if let failure = self.failure { continuation.resume(returning: .failure(failure)) }
+                    else if self.closed { continuation.resume(returning: .failure(CancellationError())) }
+                    else { continuation.resume(returning: .success(self.lastTime == nil ? nil : self.firstTime)) }
+                }
+            }
+            if let first = try state.get() { return first }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw DemoRecorder.RecordingError.noFrames }
+            try await Task.sleep(nanoseconds: 40_000_000)
         }
     }
 
@@ -402,15 +634,17 @@ final class DemoRecordingSink: NSObject, SCStreamOutput, SCStreamDelegate, @unch
                     continuation.resume(throwing: self.failure ?? DemoRecorder.RecordingError.noFrames)
                     return
                 }
-                let end = max(endTime, (self.lastTime ?? first) + 1.0 / 30.0)
+                let end = max(self.timeline.endTime(for: endTime), (self.lastTime ?? first) + DemoVideoTiming.frameDuration)
                 // Retiming a final sample makes an idle desktop retain its full
                 // recorded duration rather than ending at the last changed frame.
-                let tailTime = max(first, end - 1.0 / 30.0)
+                let tailTime = max(first, end - DemoVideoTiming.frameDuration)
+                let tailTimestamp = CMTime(seconds: tailTime, preferredTimescale: 1_000_000_000)
+                let lastTimestamp = CMTime(seconds: self.lastTime ?? first, preferredTimescale: 1_000_000_000)
                 let finalFrame = self.recentFrames.last
                 if let finalFrame, self.failure == nil, self.input.isReadyForMoreMediaData,
-                   tailTime > (self.lastTime ?? first) {
-                    var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 30),
-                                                    presentationTimeStamp: CMTime(seconds: tailTime, preferredTimescale: 1_000_000_000),
+                   CMTimeCompare(tailTimestamp, lastTimestamp) > 0 {
+                    var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: DemoVideoTiming.framesPerSecond),
+                                                    presentationTimeStamp: tailTimestamp,
                                                     decodeTimeStamp: .invalid)
                     var tail: CMSampleBuffer?
                     let status = CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault,
@@ -424,8 +658,17 @@ final class DemoRecordingSink: NSObject, SCStreamOutput, SCStreamDelegate, @unch
                 else { self.warn("未能生成步骤截图；原始录屏已保留，可以手动补充步骤。") }
                 self.input.markAsFinished()
                 self.writer.endSession(atSourceTime: CMTime(seconds: end, preferredTimescale: 1_000_000_000))
-                let points = self.pointers
-                let clickEvents = self.clicks
+                // Mouse monitors and the pointer timer can reach this queue in a
+                // different order from their host timestamps. Clicks also anchor
+                // the visible cursor at the actual event position, between ticks.
+                // Equal-time click anchors follow timer samples so binary-search
+                // interpolation resolves the exact click time to the real event.
+                let points = (self.pointers + self.clicks).enumerated().sorted {
+                    $0.element.0 == $1.element.0 ? $0.offset < $1.offset : $0.element.0 < $1.element.0
+                }.map { $0.element }
+                let clickEvents = self.clicks.enumerated().sorted {
+                    $0.element.0 == $1.element.0 ? $0.offset < $1.offset : $0.element.0 < $1.element.0
+                }.map { $0.element }
                 let recordingFailure = self.failure
                 let recordingNotices = self.notices
                 self.writer.finishWriting {

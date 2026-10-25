@@ -10,6 +10,9 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
     private let mode = NSSegmentedControl(labels: ["演示视频", "交互步骤"], trackingMode: .selectOne, target: nil, action: nil)
     private let list = NSTableView()
     private let listTitle = NSTextField(labelWithString: "缩放片段")
+    private let listEmptyState = NSStackView()
+    private let emptyTitle = NSTextField(labelWithString: "")
+    private let emptyDetail = NSTextField(wrappingLabelWithString: "")
     private let center = NSView()
     private let inspector = NSStackView()
     private let video = DemoVideoPreview(frame: .zero)
@@ -17,6 +20,11 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
     private let playButton = NSButton()
     private let timeSlider = NSSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let timeLabel = NSTextField(labelWithString: "00:00 / 00:00")
+    private let trimRangeLabel = NSTextField(labelWithString: "")
+    private let trimDurationLabel = NSTextField(labelWithString: "")
+    private let trimIn = NSButton()
+    private let trimOut = NSButton()
+    private let resetTrim = NSButton()
     private let previewMode = NSSegmentedControl(labels: ["编辑", "预览"], trackingMode: .selectOne, target: nil, action: nil)
     private let projectTitle = NSTextField(string: "")
     private let stepTitle = NSTextField(string: "")
@@ -64,12 +72,16 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
         window.delegate = self
         buildInterface()
         video.configure(project: project, directory: directory)
+        var lastPlaying: Bool?
         video.onTimeChange = { [weak self] time, playing in
             guard let self else { return }
             self.timeSlider.doubleValue = time
-            self.timeLabel.stringValue = "\(Self.time(time)) / \(Self.time(self.project.duration))"
-            self.playButton.image = NSImage(systemSymbolName: playing ? "pause.fill" : "play.fill", accessibilityDescription: playing ? "暂停" : "播放")
-            self.playButton.setAccessibilityLabel(playing ? "暂停预览" : "播放预览")
+            self.updatePlaybackTime(time)
+            if lastPlaying != playing {
+                self.playButton.image = NSImage(systemSymbolName: playing ? "pause.fill" : "play.fill", accessibilityDescription: playing ? "暂停" : "播放")
+                self.playButton.setAccessibilityLabel(playing ? "暂停预览" : "播放预览")
+                lastPlaying = playing
+            }
         }
         video.onFocusPicked = { [weak self] point in
             guard let self, !self.isSteps, self.project.zooms.indices.contains(self.selected) else { return }
@@ -127,6 +139,16 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
+        emptyTitle.font = .systemFont(ofSize: 12, weight: .semibold)
+        emptyTitle.alignment = .center
+        emptyDetail.font = .systemFont(ofSize: 11)
+        emptyDetail.textColor = .secondaryLabelColor
+        emptyDetail.alignment = .center
+        let emptyAdd = button("添加聚焦片段", symbol: "plus", action: #selector(addItem))
+        listEmptyState.setViews([emptyTitle, emptyDetail, emptyAdd], in: .center)
+        listEmptyState.orientation = .vertical
+        listEmptyState.alignment = .centerX
+        listEmptyState.spacing = 10
         let add = icon("plus", label: "添加步骤或缩放片段", action: #selector(addItem))
         let up = icon("arrow.up", label: "上移步骤", action: #selector(moveStepUp))
         let down = icon("arrow.down", label: "下移步骤", action: #selector(moveStepDown))
@@ -134,7 +156,7 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
         let listActions = NSStackView(views: [add, flexible(), up, down, remove])
         listActions.spacing = 6
         listActions.alignment = .centerY
-        [listTitle, scroll, listActions].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; sidebar.addSubview($0) }
+        [listTitle, scroll, listActions, listEmptyState].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; sidebar.addSubview($0) }
         NSLayoutConstraint.activate([
             listTitle.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 18),
             listTitle.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 16),
@@ -144,7 +166,11 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
             scroll.bottomAnchor.constraint(equalTo: listActions.topAnchor, constant: -8),
             listActions.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 12),
             listActions.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -12),
-            listActions.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -12)
+            listActions.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -12),
+            listEmptyState.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 18),
+            listEmptyState.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -18),
+            listEmptyState.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
+            emptyDetail.widthAnchor.constraint(equalTo: listEmptyState.widthAnchor)
         ])
 
         center.wantsLayer = true
@@ -156,7 +182,8 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
         timeSlider.setAccessibilityLabel("视频播放位置")
         timeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         timeLabel.textColor = .secondaryLabelColor
-        timeLabel.widthAnchor.constraint(equalToConstant: 100).isActive = true
+        timeLabel.widthAnchor.constraint(equalToConstant: 126).isActive = true
+        timeLabel.setAccessibilityLabel("保留片段播放进度与导出时长")
         previewMode.selectedSegment = 0
         previewMode.target = self
         previewMode.action = #selector(changePreviewMode)
@@ -180,17 +207,33 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
             playback.bottomAnchor.constraint(equalTo: center.bottomAnchor, constant: -12)
         ])
 
-        let inspectorContainer = NSView()
+        let inspectorContainer = NSScrollView()
+        inspectorContainer.hasVerticalScroller = true
+        inspectorContainer.autohidesScrollers = true
+        inspectorContainer.drawsBackground = false
+        let inspectorDocument = DemoInspectorDocumentView()
+        inspectorDocument.translatesAutoresizingMaskIntoConstraints = false
+        inspectorContainer.documentView = inspectorDocument
         inspector.orientation = .vertical
         inspector.alignment = .leading
         inspector.spacing = 14
         inspector.translatesAutoresizingMaskIntoConstraints = false
-        inspectorContainer.addSubview(inspector)
+        inspectorDocument.addSubview(inspector)
         NSLayoutConstraint.activate([
-            inspector.leadingAnchor.constraint(equalTo: inspectorContainer.leadingAnchor, constant: 18),
-            inspector.trailingAnchor.constraint(equalTo: inspectorContainer.trailingAnchor, constant: -18),
-            inspector.topAnchor.constraint(equalTo: inspectorContainer.topAnchor, constant: 18)
+            inspectorDocument.widthAnchor.constraint(equalTo: inspectorContainer.contentView.widthAnchor),
+            inspector.leadingAnchor.constraint(equalTo: inspectorDocument.leadingAnchor, constant: 18),
+            inspector.trailingAnchor.constraint(equalTo: inspectorDocument.trailingAnchor, constant: -18),
+            inspector.topAnchor.constraint(equalTo: inspectorDocument.topAnchor, constant: 18),
+            inspector.bottomAnchor.constraint(equalTo: inspectorDocument.bottomAnchor, constant: -18)
         ])
+        configureTrimButton(trimIn, title: "设为入点", symbol: "arrow.right.to.line", action: #selector(markTrimIn))
+        configureTrimButton(trimOut, title: "设为出点", symbol: "arrow.left.to.line", action: #selector(markTrimOut))
+        configureTrimButton(resetTrim, title: "恢复整段", symbol: "arrow.uturn.backward", action: #selector(restoreFullVideo))
+        trimIn.toolTip = "剪掉当前播放位置之前的内容，原片保留"
+        trimOut.toolTip = "剪掉当前播放位置之后的内容，原片保留"
+        trimRangeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        trimRangeLabel.textColor = .secondaryLabelColor
+        trimDurationLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         for (field, label) in [(projectTitle, "演示名称"), (stepTitle, "步骤标题"), (stepBody, "步骤说明"), (zoomStart, "缩放开始秒数"), (zoomEnd, "缩放结束秒数")] {
             field.delegate = self
             field.target = self
@@ -255,13 +298,19 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
         selected = max(0, min(selected, count - 1))
         listTitle.stringValue = isSteps ? "操作步骤 · \(count)" : "缩放片段 · \(count)"
         list.reloadData()
+        listEmptyState.isHidden = isSteps || count > 0
+        emptyTitle.stringValue = "尚无聚焦片段"
+        emptyDetail.stringValue = "画面会按原比例播放。\n在需要强调的位置添加片段，\n再点击画面选择焦点。"
         if count > 0 { list.selectRowIndexes(IndexSet(integer: selected), byExtendingSelection: false) }
         video.isHidden = isSteps
         interactive.isHidden = !isSteps
         [playButton, timeSlider, timeLabel].forEach { $0.isHidden = isSteps }
         previewMode.isHidden = !isSteps
-        timeSlider.maxValue = max(0.01, project.duration)
-        timeLabel.stringValue = "\(Self.time(video.currentTime)) / \(Self.time(project.duration))"
+        let range = project.videoRange()
+        timeSlider.minValue = range.start
+        timeSlider.maxValue = max(range.start + 0.001, range.lastFrameTime)
+        timeSlider.doubleValue = range.clampedPreviewTime(video.currentTime)
+        updatePlaybackTime(video.currentTime)
         projectTitle.stringValue = project.title
         window?.title = project.title
         autoZoom.state = project.autoZoom ? .on : .off
@@ -285,6 +334,14 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
             } else { addInspector(note("没有步骤。点击左下角 ＋ 添加截图，或重新录制操作。")) }
             updateInteractive()
         } else {
+            trimRangeLabel.stringValue = "原片 \(Self.preciseTime(range.start)) → \(Self.preciseTime(range.end))"
+            trimDurationLabel.stringValue = String(format: "导出时长 %.2f 秒", range.duration)
+            trimDurationLabel.setAccessibilityLabel(trimDurationLabel.stringValue)
+            resetTrim.isEnabled = project.trimStart != nil || project.trimEnd != nil
+            let marks = NSStackView(views: [trimIn, trimOut])
+            marks.distribution = .fillEqually
+            marks.spacing = 6
+            addInspector(label("保留范围"), trimDurationLabel, trimRangeLabel, marks, resetTrim, rule())
             addInspector(label("画面效果"), autoZoom, showCursor, showClicks, rule())
             if project.zooms.indices.contains(selected) {
                 let zoom = project.zooms[selected]
@@ -293,14 +350,22 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
                 zoomEnd.stringValue = String(format: "%.2f", zoom.end)
                 let amounts = [1.3, 1.5, 1.8, 2.0, 2.5, 3.0]
                 zoomAmount.selectItem(at: amounts.enumerated().min(by: { abs($0.element - zoom.amount) < abs($1.element - zoom.amount) })?.offset ?? 2)
-                addInspector(label("所选缩放片段"), zoomEnabled, label("开始 · 秒"), zoomStart, label("结束 · 秒"), zoomEnd,
+                addInspector(label("所选缩放片段"), zoomEnabled, label("开始 · 原片秒数"), zoomStart, label("结束 · 原片秒数"), zoomEnd,
                              label("放大倍数"), zoomAmount, button("在画面中定位", symbol: "scope", action: #selector(pickFocus)))
             } else { addInspector(note("点击会自动生成缩放片段。也可在左下角 ＋ 为当前播放位置添加一段。")) }
             video.project = project
         }
         undoButton.isEnabled = !undoHistory.isEmpty
         redoButton.isEnabled = !redoHistory.isEmpty
-        if !isExporting { status.stringValue = project.recordingNotice ?? "更改自动保存到本机 · \(Self.time(project.duration)) · \(project.steps.count) 个步骤" }
+        if !isExporting { status.stringValue = project.recordingNotice ?? "更改自动保存到本机 · 视频 \(String(format: "%.2f", range.duration)) 秒 · \(project.steps.count) 个步骤" }
+    }
+
+    private func updatePlaybackTime(_ sourceTime: Double) {
+        let range = project.videoRange()
+        timeLabel.stringValue = "\(Self.playbackTime(max(0, sourceTime - range.start))) / \(Self.playbackTime(range.duration))"
+        timeLabel.toolTip = "原片位置 \(Self.preciseTime(sourceTime)) · 仅播放保留范围"
+        trimIn.isEnabled = sourceTime > range.start + 0.0001 && range.end - sourceTime >= DemoVideoTiming.frameDuration
+        trimOut.isEnabled = sourceTime - range.start >= DemoVideoTiming.frameDuration && sourceTime < range.end - 0.0001
     }
 
     private func updateInteractive() {
@@ -367,7 +432,9 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
         } else {
             let zoom = project.zooms[row]
             title = "\(Self.time(zoom.start)) – \(Self.time(zoom.end))"
-            detail = zoom.enabled ? String(format: "%.1f× · 点击聚焦", zoom.amount) : "已停用"
+            let range = project.videoRange()
+            if zoom.end <= range.start || zoom.start >= range.end { detail = "保留范围外 · 不会导出" }
+            else { detail = zoom.enabled ? String(format: "%.1f× · 点击聚焦", zoom.amount) : "已停用" }
         }
         let text = NSTextField(labelWithString: title)
         text.font = .systemFont(ofSize: 12, weight: .medium)
@@ -424,7 +491,35 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
     @objc private func changeDemoMode() { video.pause(); video.allowsFocusPicking = false; selected = 0; refreshAll() }
     @objc private func changePreviewMode() { updateInteractive() }
     @objc private func togglePlay() { if video.isPlaying { video.pause() } else { video.play() } }
-    @objc private func seekVideo() { video.pause(); video.seek(to: timeSlider.doubleValue) }
+    @objc private func seekVideo() {
+        let destination = timeSlider.doubleValue
+        video.pause()
+        video.seek(to: destination)
+    }
+    @objc private func markTrimIn() {
+        guard persistFields(includeTiming: true) else { return }
+        let time = video.currentTime
+        let range = project.videoRange()
+        guard time > range.start, range.end - time >= DemoVideoTiming.frameDuration else { return }
+        video.pause()
+        edit { $0.trimStart = time }
+        status.stringValue = "已剪去片头 · 原片保留，可随时恢复整段"
+    }
+    @objc private func markTrimOut() {
+        guard persistFields(includeTiming: true) else { return }
+        let time = video.currentTime
+        let range = project.videoRange()
+        guard time - range.start >= DemoVideoTiming.frameDuration, time < range.end else { return }
+        video.pause()
+        edit { $0.trimEnd = time }
+        status.stringValue = "已剪去片尾 · 原片保留，可随时恢复整段"
+    }
+    @objc private func restoreFullVideo() {
+        guard persistFields(includeTiming: true) else { return }
+        video.pause()
+        edit { $0.trimStart = nil; $0.trimEnd = nil }
+        status.stringValue = "已恢复整段视频"
+    }
     @objc private func pickFocus() { video.allowsFocusPicking = true; status.stringValue = "点击画面选择焦点 · 当前显示完整画面" }
     @objc private func newRecording() { video.pause(); onNewRecording() }
     @objc private func showProject() { NSWorkspace.shared.activateFileViewerSelecting([directory]) }
@@ -559,7 +654,7 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
         progress.doubleValue = 0
         progress.isHidden = false
         cancelExport.isHidden = false
-        status.stringValue = "正在导出 MP4…"
+        status.stringValue = "正在导出 MP4 · \(String(format: "%.2f", project.videoRange().duration)) 秒…"
         let snapshot = project
         exportTask = Task { [weak self] in
             guard let self else { return }
@@ -628,6 +723,16 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
         button.setAccessibilityLabel(title)
         return button
     }
+    private func configureTrimButton(_ button: NSButton, title: String, symbol: String, action: Selector) {
+        button.title = title
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        button.imagePosition = .imageLeading
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.target = self
+        button.action = action
+        button.setAccessibilityLabel(title)
+    }
     private func icon(_ symbol: String, label: String, action: Selector) -> NSButton {
         let button = NSButton(); configureIcon(button, symbol: symbol, label: label, action: action); return button
     }
@@ -651,4 +756,16 @@ final class DemoStudioWindowController: NSWindowController, NSWindowDelegate, NS
         let value = max(0, Int(seconds.isFinite ? seconds : 0))
         return String(format: "%02d:%02d", value / 60, value % 60)
     }
+    private static func preciseTime(_ seconds: Double) -> String {
+        let value = max(0, seconds.isFinite ? seconds : 0)
+        return String(format: "%02d:%05.2f", Int(value) / 60, value.truncatingRemainder(dividingBy: 60))
+    }
+    private static func playbackTime(_ seconds: Double) -> String {
+        let value = max(0, seconds.isFinite ? seconds : 0)
+        return String(format: "%02d:%04.1f", Int(value) / 60, value.truncatingRemainder(dividingBy: 60))
+    }
+}
+
+private final class DemoInspectorDocumentView: NSView {
+    override var isFlipped: Bool { true }
 }
