@@ -7,10 +7,22 @@
   <key>CFBundleDisplayName</key><string>XShot</string>
   <key>CFBundleIconFile</key><string>XShot.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>0.2.0</string>
+  <key>CFBundleVersion</key><string>2</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
-  <key>NSScreenCaptureUsageDescription</key><string>XShot 仅在你主动截图时读取屏幕，用于框选、标注和贴图。</string>
+  <key>NSScreenCaptureUsageDescription</key><string>XShot 仅在你主动截图或录制产品演示时读取屏幕，内容保存在本机。</string>
+  <key>CFBundleDocumentTypes</key><array><dict>
+    <key>CFBundleTypeName</key><string>XShot 演示项目</string>
+    <key>LSItemContentTypes</key><array><string>local.joebon.xshot.demo</string></array>
+    <key>CFBundleTypeRole</key><string>Editor</string>
+    <key>LSTypeIsPackage</key><true/>
+  </dict></array>
+  <key>UTExportedTypeDeclarations</key><array><dict>
+    <key>UTTypeIdentifier</key><string>local.joebon.xshot.demo</string>
+    <key>UTTypeDescription</key><string>XShot 演示项目</string>
+    <key>UTTypeConformsTo</key><array><string>com.apple.package</string></array>
+    <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>xshotdemo</string></array></dict>
+  </dict></array>
 </dict></plist>

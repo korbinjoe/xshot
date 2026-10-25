@@ -1,8 +1,8 @@
 import AppKit
 
 final class HomeWindow: NSWindow {
-    init(onCapture: @escaping () -> Void, onOpen: @escaping () -> Void, onPermissions: @escaping () -> Void) {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 520, height: 356),
+    init(onCapture: @escaping () -> Void, onOpen: @escaping () -> Void, onDemo: @escaping () -> Void, onPermissions: @escaping () -> Void) {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 520, height: 400),
                    styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
                    backing: .buffered, defer: false)
         title = "XShot"
@@ -12,7 +12,7 @@ final class HomeWindow: NSWindow {
         isMovableByWindowBackground = true
         isReleasedWhenClosed = false
         tabbingMode = .disallowed
-        contentView = HomeContentView(onCapture: onCapture, onOpen: onOpen, onPermissions: onPermissions)
+        contentView = HomeContentView(onCapture: onCapture, onOpen: onOpen, onDemo: onDemo, onPermissions: onPermissions)
         center()
     }
 
@@ -27,7 +27,7 @@ private final class HomeContentView: NSView {
     private let permissionLabel = NSTextField(labelWithString: "")
     private let permissionAction: () -> Void
 
-    init(onCapture: @escaping () -> Void, onOpen: @escaping () -> Void, onPermissions: @escaping () -> Void) {
+    init(onCapture: @escaping () -> Void, onOpen: @escaping () -> Void, onDemo: @escaping () -> Void, onPermissions: @escaping () -> Void) {
         permissionAction = onPermissions
         super.init(frame: .zero)
 
@@ -41,7 +41,7 @@ private final class HomeContentView: NSView {
         logo.heightAnchor.constraint(equalToConstant: 42).isActive = true
         let title = NSTextField(labelWithString: "XShot")
         title.font = .systemFont(ofSize: 25, weight: .bold)
-        let subtitle = NSTextField(labelWithString: "截取屏幕，让表达更清楚。")
+        let subtitle = NSTextField(labelWithString: "截图、录屏，让表达更清楚。")
         subtitle.font = .systemFont(ofSize: 12)
         subtitle.textColor = .secondaryLabelColor
         let titleStack = NSStackView(views: [title, subtitle])
@@ -57,6 +57,8 @@ private final class HomeContentView: NSView {
         capture.setAccessibilityLabel("框选截图，快捷键 Option X")
         let open = HomeActionButton(title: "打开图片…", detail: "为已有图片添加标注", symbol: "photo", shortcut: "⌘ O", primary: false, onPress: onOpen)
         open.setAccessibilityLabel("打开图片")
+        let demo = HomeActionButton(title: "产品演示", detail: "自动聚焦录屏，也能制作可点击步骤", symbol: "play.rectangle", shortcut: "⌥ R", primary: false, onPress: onDemo)
+        demo.setAccessibilityLabel("产品演示，快捷键 Option R")
 
         permissionIcon.translatesAutoresizingMaskIntoConstraints = false
         permissionIcon.widthAnchor.constraint(equalToConstant: 13).isActive = true
@@ -67,7 +69,7 @@ private final class HomeContentView: NSView {
         let status = NSStackView(views: [permissionIcon, permissionLabel])
         status.alignment = .centerY
         status.spacing = 5
-        let local = NSTextField(labelWithString: "图片仅在本机处理")
+        let local = NSTextField(labelWithString: "内容仅在本机处理")
         local.font = .systemFont(ofSize: 11)
         local.textColor = .secondaryLabelColor
         let settings = NSButton(image: NSImage(systemSymbolName: "gearshape", accessibilityDescription: "管理屏幕权限")!, target: self, action: #selector(managePermission))
@@ -83,23 +85,27 @@ private final class HomeContentView: NSView {
         footer.spacing = 10
         footer.alignment = .centerY
 
-        for view in [header, capture, open, footer] {
+        for view in [header, capture, open, demo, footer] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
         NSLayoutConstraint.activate([
             header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 32),
-            header.topAnchor.constraint(equalTo: topAnchor, constant: 48),
+            header.topAnchor.constraint(equalTo: topAnchor, constant: 32),
             header.heightAnchor.constraint(equalToConstant: 52),
-            capture.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 24),
+            capture.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 20),
             capture.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 28),
             capture.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -28),
-            capture.heightAnchor.constraint(equalToConstant: 80),
+            capture.heightAnchor.constraint(equalToConstant: 72),
             open.topAnchor.constraint(equalTo: capture.bottomAnchor, constant: 10),
             open.leadingAnchor.constraint(equalTo: capture.leadingAnchor),
             open.trailingAnchor.constraint(equalTo: capture.trailingAnchor),
-            open.heightAnchor.constraint(equalToConstant: 66),
-            footer.topAnchor.constraint(equalTo: open.bottomAnchor, constant: 24),
+            open.heightAnchor.constraint(equalToConstant: 58),
+            demo.topAnchor.constraint(equalTo: open.bottomAnchor, constant: 10),
+            demo.leadingAnchor.constraint(equalTo: capture.leadingAnchor),
+            demo.trailingAnchor.constraint(equalTo: capture.trailingAnchor),
+            demo.heightAnchor.constraint(equalToConstant: 66),
+            footer.topAnchor.constraint(equalTo: demo.bottomAnchor, constant: 20),
             footer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 32),
             footer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -28),
             footer.heightAnchor.constraint(equalToConstant: 22),
