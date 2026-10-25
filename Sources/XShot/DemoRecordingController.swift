@@ -22,6 +22,8 @@ final class DemoRecordingController: NSWindowController, NSWindowDelegate {
     private var countdownTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var refreshID = UUID()
+    private var requestedScreenPermission = false
+    private var requestingScreenPermission = false
     private var directory: URL?
     private var pendingTitle = "产品演示"
     private var stopAfterStart = false
@@ -249,7 +251,26 @@ final class DemoRecordingController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    @objc private func openPrivacy() { CaptureCoordinator.openPrivacySettings() }
+    @objc private func openPrivacy() {
+        guard phase == .idle, !requestingScreenPermission else { return }
+        if CGPreflightScreenCaptureAccess() { refreshDisplays(); return }
+        requestingScreenPermission = true
+        permissionButton.isEnabled = false
+        defer {
+            requestingScreenPermission = false
+            permissionButton.isEnabled = true
+        }
+        // Only an explicit click requests access, once per app session. Repeated
+        // visits use System Settings rather than issuing another permission call.
+        if !requestedScreenPermission {
+            requestedScreenPermission = true
+            let granted = CGRequestScreenCaptureAccess()
+            if granted || CGPreflightScreenCaptureAccess() { refreshDisplays(); return }
+        }
+        statusLabel.stringValue = "请在系统设置中允许 XShot。若刚授权仍无法录制，请退出后重新打开 XShot。"
+        statusLabel.textColor = .secondaryLabelColor
+        CaptureCoordinator.openPrivacySettings()
+    }
     @objc private func revealProject() {
         if let directory { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: directory.path) }
     }
