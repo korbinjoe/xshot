@@ -1,14 +1,14 @@
 import AppKit
 import UniformTypeIdentifiers
 
-final class EditorWindowController: NSWindowController, NSWindowDelegate {
+final class EditorWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
     private let canvas: AnnotationCanvas
     private let styledDocument: StyledCanvasDocument
     private let beautification = BeautificationPanel()
     private let beautyPopover = NSPopover()
     private let beautyButton = NSButton()
     private let scrollView = NSScrollView()
-    private let colorWell = NSColorWell()
+    private let colorPicker = AnnotationColorPicker()
     private let widthPicker = NSPopUpButton()
     private let undoButton = NSButton()
     private let redoButton = NSButton()
@@ -21,6 +21,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
     private var fitMode = true
     private var isFitting = false
     private var magnificationObserver: NSObjectProtocol?
+    private var toolbarItems: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
+    private let toolbarOrder: [NSToolbarItem.Identifier] = [
+        .init("tools"), .init("color"), .init("width"), .init("history"), .flexibleSpace,
+        .init("beauty"), .init("pin"), .init("save"), .init("copy")
+    ]
 
     init(image: NSImage, onPin: @escaping (NSImage) -> Void) {
         let fallback = NSImage(size: NSSize(width: 1, height: 1))
@@ -41,10 +46,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.tabbingMode = .disallowed
         window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.toolbarStyle = .unifiedCompact
         window.backgroundColor = .windowBackgroundColor
         super.init(window: window)
         window.delegate = self
         buildInterface()
+        buildToolbar()
         beautification.onChange = { [weak self] style in self?.applyStyle(style) }
         beautyPopover.contentViewController = beautification
         beautyPopover.behavior = .transient
@@ -83,12 +91,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
         fitImage()
     }
 
+    func windowWillClose(_ notification: Notification) {
+        colorPicker.closePicker()
+        beautyPopover.performClose(nil)
+    }
+
     private func buildInterface() {
         guard let content = window?.contentView else { return }
-        let top = NSVisualEffectView()
-        top.material = .titlebar
-        top.blendingMode = .withinWindow
-        top.translatesAutoresizingMaskIntoConstraints = false
         let bottom = NSVisualEffectView()
         bottom.material = .titlebar
         bottom.blendingMode = .withinWindow
@@ -105,72 +114,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
         scrollView.contentView = CenteredImageClipView()
         scrollView.documentView = styledDocument
         scrollView.setAccessibilityLabel("截图画布滚动区域")
-
-        let toolSymbols = ["rectangle", "arrow.up.right", "pencil.tip", "textformat", "square.grid.3x3.fill"]
-        let tools = NSSegmentedControl(images: toolSymbols.enumerated().map { index, symbol in
-            symbolImage(symbol, description: AnnotationCanvas.Tool.allCases[index].title, size: 14)
-        }, trackingMode: .selectOne, target: self, action: #selector(selectTool(_:)))
-        tools.selectedSegment = 0
-        tools.segmentStyle = .rounded
-        tools.controlSize = .regular
-        tools.setAccessibilityLabel("标注工具")
-        for (index, tool) in AnnotationCanvas.Tool.allCases.enumerated() {
-            tools.setWidth(34, forSegment: index)
-            tools.setToolTip(tool.title, forSegment: index)
-        }
-        colorWell.color = .systemRed
-        colorWell.target = self
-        colorWell.action = #selector(changeColor(_:))
-        colorWell.controlSize = .small
-        colorWell.colorWellStyle = .minimal
-        colorWell.translatesAutoresizingMaskIntoConstraints = false
-        colorWell.widthAnchor.constraint(equalToConstant: 28).isActive = true
-        colorWell.heightAnchor.constraint(equalToConstant: 28).isActive = true
-        colorWell.toolTip = "标注颜色"
-        colorWell.setAccessibilityLabel("标注颜色")
-        widthPicker.addItems(withTitles: ["2 px", "4 px", "8 px", "12 px"])
-        widthPicker.selectItem(at: 1)
-        widthPicker.target = self
-        widthPicker.action = #selector(changeWidth(_:))
-        widthPicker.bezelStyle = .texturedRounded
-        widthPicker.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-        widthPicker.translatesAutoresizingMaskIntoConstraints = false
-        widthPicker.widthAnchor.constraint(equalToConstant: 68).isActive = true
-        widthPicker.toolTip = "标注线宽（图像像素）"
-        widthPicker.setAccessibilityLabel("标注线宽")
-        configureIconButton(undoButton, symbol: "arrow.uturn.backward", label: "撤销", action: #selector(undoMark))
-        configureIconButton(redoButton, symbol: "arrow.uturn.forward", label: "重做", action: #selector(redoMark))
-        configureIconButton(clearButton, symbol: "trash", label: "清空标注", action: #selector(clearMarks))
-        let history = NSStackView(views: [undoButton, redoButton, clearButton])
-        history.spacing = 2
-        let topStack = NSStackView(views: [tools, divider(), colorWell, widthPicker, divider(), history])
-        topStack.orientation = .horizontal
-        topStack.alignment = .centerY
-        topStack.spacing = 10
-        topStack.translatesAutoresizingMaskIntoConstraints = false
-        top.addSubview(topStack)
-
-        let copy = actionButton("复制", symbol: "doc.on.doc", action: #selector(copyImage))
-        copy.bezelColor = .controlAccentColor
-        copy.toolTip = "复制截图 · ⌘C"
-        let save = actionButton("保存…", symbol: "square.and.arrow.down", action: #selector(saveImage))
-        save.toolTip = "保存 PNG · ⌘S"
-        let pin = actionButton("贴图", symbol: "pin", action: #selector(pinImage))
-        pin.toolTip = "将截图悬浮在桌面"
-        beautyButton.title = "美化"
-        beautyButton.image = symbolImage("slider.horizontal.3", description: nil, size: 12)
-        beautyButton.imagePosition = .imageLeading
-        beautyButton.bezelStyle = .rounded
-        beautyButton.font = .systemFont(ofSize: 12, weight: .medium)
-        beautyButton.target = self
-        beautyButton.action = #selector(toggleBeautification)
-        beautyButton.setAccessibilityLabel("截图美化")
-        beautyButton.toolTip = "圆角、阴影、边框与背景留白"
-        let actions = NSStackView(views: [beautyButton, divider(), pin, save, copy])
-        actions.alignment = .centerY
-        actions.spacing = 8
-        actions.translatesAutoresizingMaskIntoConstraints = false
-        top.addSubview(actions)
 
         let zoomOut = NSButton()
         let zoomIn = NSButton()
@@ -208,27 +151,15 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
         bottom.addSubview(statusLabel)
         bottom.addSubview(zoom)
 
-        let topRule = horizontalRule()
         let bottomRule = horizontalRule()
-        top.addSubview(topRule)
         bottom.addSubview(bottomRule)
 
-        content.addSubview(top)
         content.addSubview(scrollView)
         content.addSubview(bottom)
         NSLayoutConstraint.activate([
-            top.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            top.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            top.topAnchor.constraint(equalTo: content.topAnchor),
-            top.heightAnchor.constraint(equalToConstant: 54),
-            topStack.leadingAnchor.constraint(equalTo: top.leadingAnchor, constant: 16),
-            topStack.centerYAnchor.constraint(equalTo: top.centerYAnchor),
-            topStack.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -20),
-            actions.trailingAnchor.constraint(equalTo: top.trailingAnchor, constant: -16),
-            actions.centerYAnchor.constraint(equalTo: top.centerYAnchor),
             scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: top.bottomAnchor),
+            scrollView.topAnchor.constraint(equalTo: content.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: bottom.topAnchor),
             bottom.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             bottom.trailingAnchor.constraint(equalTo: content.trailingAnchor),
@@ -242,14 +173,84 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
             statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: zoom.leadingAnchor, constant: -18),
             statusLabel.centerXAnchor.constraint(equalTo: bottom.centerXAnchor),
             statusLabel.centerYAnchor.constraint(equalTo: bottom.centerYAnchor),
-            topRule.leadingAnchor.constraint(equalTo: top.leadingAnchor),
-            topRule.trailingAnchor.constraint(equalTo: top.trailingAnchor),
-            topRule.bottomAnchor.constraint(equalTo: top.bottomAnchor),
             bottomRule.leadingAnchor.constraint(equalTo: bottom.leadingAnchor),
             bottomRule.trailingAnchor.constraint(equalTo: bottom.trailingAnchor),
             bottomRule.topAnchor.constraint(equalTo: bottom.topAnchor)
         ])
     }
+
+    private func buildToolbar() {
+        let symbols = ["rectangle", "arrow.up.right", "pencil.tip", "textformat", "square.grid.3x3.fill"]
+        let tools = NSSegmentedControl(images: symbols.enumerated().map { index, symbol in
+            symbolImage(symbol, description: AnnotationCanvas.Tool.allCases[index].title, size: 14)
+        }, trackingMode: .selectOne, target: self, action: #selector(selectTool(_:)))
+        tools.selectedSegment = 0
+        tools.segmentStyle = .automatic
+        tools.setAccessibilityLabel("标注工具")
+        for (index, tool) in AnnotationCanvas.Tool.allCases.enumerated() {
+            tools.setWidth(30, forSegment: index)
+            tools.setToolTip(tool.title, forSegment: index)
+        }
+        colorPicker.onBeginSelection = { [weak self] in self?.canvas.finishTextEditing() }
+        colorPicker.onColorChange = { [weak self] color in self?.canvas.inkColor = color }
+        widthPicker.addItems(withTitles: ["2 px", "4 px", "8 px", "12 px"])
+        widthPicker.selectItem(at: 1)
+        widthPicker.target = self
+        widthPicker.action = #selector(changeWidth(_:))
+        widthPicker.bezelStyle = .texturedRounded
+        widthPicker.isBordered = false
+        widthPicker.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        widthPicker.translatesAutoresizingMaskIntoConstraints = false
+        widthPicker.widthAnchor.constraint(equalToConstant: 62).isActive = true
+        widthPicker.toolTip = "标注线宽（图像像素）"
+        widthPicker.setAccessibilityLabel("标注线宽")
+        configureIconButton(undoButton, symbol: "arrow.uturn.backward", label: "撤销", action: #selector(undoMark))
+        configureIconButton(redoButton, symbol: "arrow.uturn.forward", label: "重做", action: #selector(redoMark))
+        configureIconButton(clearButton, symbol: "trash", label: "清空标注", action: #selector(clearMarks))
+        let history = NSStackView(views: [undoButton, redoButton, clearButton])
+        history.spacing = 0
+        history.alignment = .centerY
+        configureIconButton(beautyButton, symbol: "slider.horizontal.3", label: "截图美化", action: #selector(toggleBeautification))
+        beautyButton.toolTip = "截图美化 · 圆角、阴影、边框与背景留白"
+        let pin = NSButton()
+        configureIconButton(pin, symbol: "pin", label: "贴图", action: #selector(pinImage))
+        pin.toolTip = "将截图悬浮在桌面"
+        let save = NSButton()
+        configureIconButton(save, symbol: "square.and.arrow.down", label: "保存 PNG", action: #selector(saveImage))
+        save.toolTip = "保存 PNG · ⌘S"
+        let copy = NSButton(title: "复制", image: symbolImage("doc.on.doc", description: nil), target: self, action: #selector(copyImage))
+        copy.bezelStyle = .recessed
+        copy.showsBorderOnlyWhileMouseInside = true
+        copy.font = .systemFont(ofSize: 12, weight: .medium)
+        copy.imagePosition = .imageLeading
+        copy.toolTip = "复制截图 · ⌘C"
+        copy.setAccessibilityLabel("复制截图")
+        let views: [(String, String, NSView)] = [
+            ("tools", "标注工具", tools), ("color", "标注颜色", colorPicker),
+            ("width", "标注线宽", widthPicker), ("history", "编辑历史", history),
+            ("beauty", "截图美化", beautyButton), ("pin", "贴图", pin),
+            ("save", "保存 PNG", save), ("copy", "复制截图", copy)
+        ]
+        for (key, label, view) in views {
+            let identifier = NSToolbarItem.Identifier(key)
+            let item = NSToolbarItem(itemIdentifier: identifier)
+            item.label = label
+            item.paletteLabel = label
+            item.view = view
+            item.visibilityPriority = key == "tools" || key == "color" || key == "copy" ? .high : .standard
+            toolbarItems[identifier] = item
+        }
+        let toolbar = NSToolbar(identifier: "XShot.Annotation")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        window?.toolbar = toolbar
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarOrder }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarOrder }
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? { toolbarItems[identifier] }
 
     private func divider(height: CGFloat = 20) -> NSView {
         let separator = NSBox()
@@ -276,8 +277,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
     private func configureIconButton(_ button: NSButton, symbol: String, label: String, action: Selector) {
         button.image = symbolImage(symbol, description: label)
         button.imagePosition = .imageOnly
-        button.bezelStyle = .inline
-        button.isBordered = false
+        button.bezelStyle = .recessed
+        button.showsBorderOnlyWhileMouseInside = true
         button.contentTintColor = .secondaryLabelColor
         button.target = self
         button.action = action
@@ -288,15 +289,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
         button.heightAnchor.constraint(equalToConstant: 28).isActive = true
     }
 
-    private func actionButton(_ title: String, symbol: String, action: Selector) -> NSButton {
-        let button = NSButton(title: title, image: symbolImage(symbol, description: nil, size: 12), target: self, action: action)
-        button.bezelStyle = .rounded
-        button.font = .systemFont(ofSize: 12, weight: .medium)
-        button.imagePosition = .imageLeading
-        button.setAccessibilityLabel(title.replacingOccurrences(of: "…", with: " PNG"))
-        return button
-    }
-
     @objc private func selectTool(_ sender: NSSegmentedControl) {
         guard let tool = AnnotationCanvas.Tool(rawValue: sender.selectedSegment) else { return }
         canvas.tool = tool
@@ -304,7 +296,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
         window?.makeFirstResponder(canvas)
     }
 
-    @objc private func changeColor(_ sender: NSColorWell) { canvas.inkColor = sender.color }
     @objc private func changeWidth(_ sender: NSPopUpButton) {
         canvas.strokeWidth = [CGFloat(2), 4, 8, 12][max(0, sender.indexOfSelectedItem)]
     }
@@ -320,7 +311,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
 
     private func applyStyle(_ style: ScreenshotStyle) {
         styledDocument.updateStyle(style)
-        beautyButton.bezelColor = style.isEnabled ? .controlAccentColor : nil
+        beautyButton.contentTintColor = style.isEnabled ? .controlAccentColor : .secondaryLabelColor
+        beautyButton.setAccessibilityValue(style.isEnabled ? "已启用" : "未启用")
         updateDimensions()
         if fitMode { fitImage() }
         statusLabel.stringValue = style.isEnabled ? "美化效果已应用" : "已恢复原图"
