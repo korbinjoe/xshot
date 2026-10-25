@@ -52,9 +52,9 @@ private final class HomeContentView: NSView {
         header.alignment = .centerY
         header.spacing = 16
 
-        let capture = HomeActionButton(title: "框选截图", detail: "拖动选择区域，Enter 进入标注", symbol: "viewfinder", shortcut: "⌘ ⇧ 2", primary: true, onPress: onCapture)
+        let capture = HomeActionButton(title: "框选截图", detail: "拖动选择区域，Enter 进入标注", symbol: "viewfinder", shortcut: "⌥ X", primary: true, onPress: onCapture)
         capture.keyEquivalent = "\r"
-        capture.setAccessibilityLabel("框选截图，快捷键 Command Shift 2")
+        capture.setAccessibilityLabel("框选截图，快捷键 Option X")
         let open = HomeActionButton(title: "打开图片…", detail: "为已有图片添加标注", symbol: "photo", shortcut: "⌘ O", primary: false, onPress: onOpen)
         open.setAccessibilityLabel("打开图片")
 

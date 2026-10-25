@@ -49,8 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appItem)
         let fileItem = NSMenuItem()
         let fileMenu = NSMenu(title: "文件")
-        let shot = fileMenu.addItem(withTitle: "框选截图", action: #selector(startCapture(_:)), keyEquivalent: "2")
-        shot.keyEquivalentModifierMask = [.command, .shift]
+        let shot = fileMenu.addItem(withTitle: "框选截图", action: #selector(startCapture(_:)), keyEquivalent: "x")
+        shot.keyEquivalentModifierMask = [.option]
         fileMenu.addItem(withTitle: "打开图片…", action: #selector(openImage(_:)), keyEquivalent: "o")
         fileMenu.addItem(withTitle: "保存 PNG…", action: #selector(AnnotationCanvas.saveDocument(_:)), keyEquivalent: "s")
         fileItem.submenu = fileMenu
@@ -75,9 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.image = BrandImages.menuBar()
             ?? NSImage(systemSymbolName: "viewfinder", accessibilityDescription: "XShot 截图")
         statusItem.button?.setAccessibilityLabel("XShot")
-        statusItem.button?.toolTip = "XShot · 框选截图 ⌘⇧2"
+        statusItem.button?.toolTip = "XShot · 框选截图 ⌥X"
         let menu = NSMenu()
-        menu.addItem(withTitle: "框选截图  ⌘⇧2", action: #selector(startCapture(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "框选截图  ⌥X", action: #selector(startCapture(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "打开图片…", action: #selector(openImage(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "显示主窗口", action: #selector(showHome(_:)), keyEquivalent: "")
@@ -104,7 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { delegate.startCapture(nil) }
             return noErr
         }, 1, &type, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
-        let result = RegisterEventHotKey(UInt32(kVK_ANSI_2), UInt32(cmdKey | shiftKey), EventHotKeyID(signature: signature, id: 1), GetApplicationEventTarget(), 0, &shortcut)
+        let result = RegisterEventHotKey(UInt32(kVK_ANSI_X), UInt32(optionKey), EventHotKeyID(signature: signature, id: 1), GetApplicationEventTarget(), 0, &shortcut)
         if result != noErr {
             statusItem.button?.toolTip = "XShot：全局快捷键被占用，请使用菜单栏截图"
         }
