@@ -1,0 +1,39 @@
+{
+  "brand": "XShot",
+  "tagline": "Capture, annotate, pin",
+  "brief": "A restrained, precise identity for a native macOS screenshot utility. Approved concept A.",
+  "adjectives": [
+    "Simple",
+    "Precise",
+    "Light"
+  ],
+  "criteria": "Readable in one color and at 16 px; preserve the approved open-corner silhouette.",
+  "industry": "consumer-app",
+  "brand_color": "#3478F6",
+  "tile_color": "#3478F6",
+  "greyscale": false,
+  "final": true,
+  "round": 2,
+  "concepts": [
+    {
+      "name": "Open corner",
+      "symbol": "masters/xshot-symbol-color.svg",
+      "lockup": "masters/xshot-horizontal-color.svg",
+      "stacked": "masters/xshot-stacked-color.svg",
+      "avatar": "masters/xshot-app-icon.svg",
+      "symbol_on_tile": "masters/xshot-symbol-white.svg",
+      "lockup_on_dark": "masters/xshot-horizontal-white.svg",
+      "stacked_on_dark": "masters/xshot-stacked-white.svg",
+      "idea": "Open a corner. Take a frame.",
+      "rationale": [
+        "One distinctive interruption in a familiar boundary.",
+        "Blue in the app; monochrome in the menu bar.",
+        "Vector outlines without font or image dependencies."
+      ]
+    }
+  ],
+  "recommendation": "Approved A: Open corner.",
+  "next_steps": [
+    "Verify in the actual menu bar and Dock."
+  ]
+}

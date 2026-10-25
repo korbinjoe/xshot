@@ -1,0 +1,53 @@
+# 截图美化渲染验证
+
+2026-10-24，在 Apple Silicon macOS 上运行 `scripts/check-beautification.sh`。脚本独立编译实际 `ScreenshotStyle.swift`、`AnnotationCanvas.swift` 和 `StyledCanvasDocument.swift`，不启动或重建应用。
+
+## 已通过的检查
+
+- 关闭美化：480 × 300 原图的所有像素、分辨率、朝向和 alpha 原样保留；测试图包括全透明及半透明像素。
+- 透明背景、32 px 留白：输出 544 × 364，原图位于左上坐标 (32, 32)，图像区域逐像素一致。
+- 28 px 圆角：四角裁为透明，内部像素与原图相同。
+- 透明背景、开启阴影、请求零留白：自动保留阴影所需空间，输出 588 × 408；图像外存在可见阴影，最外一圈 alpha 最大值为 0，没有可见阴影在边缘被截断；下方阴影更重。源图透明区域仍透明。
+- 纯白、雾灰、深灰、蓝色渐变：背景边缘不透明，原图不透明区域的颜色和朝向一致；蓝色渐变两端存在明显色差。
+- 4 px 边框：图像边缘发生变化，内部像素保持不变。
+
+## 画布集成检查
+
+- 用 480 × 300 bitmap、240 × 150 逻辑尺寸的 `NSImage` 创建实际标注画布；加 40 px 留白后，画布仍保持原始图像像素坐标。
+- 在隐藏测试窗口中把原图坐标转换为窗口事件坐标并画红色矩形。导出红框位于原图指定位置加留白的位置，没有上下翻转或把留白算入标注坐标。
+- 切换到 72 px 留白、阴影、边框和蓝色背景后，撤销恢复未标注的美化图，重做恢复同一位置的红框；输出 624 × 444。
+- 关闭美化后画布原点和圆角遮罩恢复；继续撤销标注后，480 × 300 导出与源图所有像素和 alpha 完全一致。
+- 调用真实视图的 `cacheDisplay` 缓存预览：透明圆角实际绘制为透明，源图内部采样位置、颜色和朝向与导出一致。该检查经过实际绘制，不只读取 layer 属性。
+
+## 输出与视觉核对
+
+所有诊断 PNG 保存到 `artifacts/beautification-checks/`（不提交生成物）：
+
+- `01-source.png` / `02-disabled.png`：关闭美化的原样对照。
+- `03-transparent-padding.png`：透明留白。
+- `04-transparent-corners.png`：透明圆角。
+- `05-transparent-shadow.png`：透明底阴影。
+- `06-background-*.png`：四种不透明背景。
+- `07-border.png`：边框。
+- `08-combined.png`：圆角、阴影、1 px 边框和蓝色渐变组合。
+- `09-screenshot-beautified.png`：若本地存在项目先前的 1200 × 800 截图样本，额外生成 1328 × 928 的实际截图美化结果。
+- `10-styled-document-annotation.png`：加留白后从窗口事件绘制的标注结果。
+- `11-restyled-document-redo.png`：切换样式后重做标注。
+- `12-document-recovered-original.png`：关闭美化并撤销后恢复的原图。
+- `13-preview-transparent-corners.png`：实际视图缓存，核对预览圆角。
+
+已打开并检查 `05-transparent-shadow.png`、`08-combined.png` 和 `09-screenshot-beautified.png`：截图内容方向正常，圆角及留白清楚可见，投影沿图像外缘连续。透明 PNG 在黑底查看器中会以黑色显示透明区域。
+
+另已查看 `11-restyled-document-redo.png` 和 `13-preview-transparent-corners.png`：红框位置正确，实际预览边缘圆角与导出一致。
+
+## 应用运行实测
+
+- 在实际 XShot 编辑器打开同一1200×800项目测试图片，点击“美化”→“留白”，画布实时出现64 px雾灰留白、16 px圆角、阴影及细边框；底部输出尺寸更新为1328×928。
+- 通过编辑器复制、系统保存面板保存PNG，再创建贴图并从贴图复制。三份PNG逐字节一致（54,814字节），尺寸均为1328×928。文件位于 `artifacts/beautification-ui/` 的 `copied.png`、`beautified-saved.png`、`pin-copied.png`。
+- 真实编辑器缩到780pt最小宽度后，工具栏、输出尺寸和缩放均完整，整张美化图片自动适配；截图为 `editor-min-width.png`。
+- 实际贴图的留白、圆角、投影和编辑器一致；截图为 `pin.png`。已打开导出PNG检查朝向及效果，未见黑边、倒置、裁切阴影。
+- 桌面操作截图只包含编辑器主窗口，未包含独立NSPopover。另用真实 `BeautificationPanel` 的视图缓存生成 `panel.png`：深色模式下286×414pt，标题、预设、开关、背景、留白、圆角、阴影、边框、说明和恢复按钮均完整，无重叠或裁切。该图片是组件渲染，不冒充完整桌面截图。
+
+本轮外观实测为当前系统深色模式。图像美化参数按原图像素计；标注对象的编辑能力仍沿用第一版边界。
+
+最终构建的严格签名检查通过；刷新相同应用路径的既有屏幕访问记录并重新启动后，主窗口确认“截图权限已就绪”。
