@@ -16,6 +16,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     private let zoomLabel = NSTextField(labelWithString: "100%")
     private let statusLabel = NSTextField(labelWithString: "拖动绘制矩形")
     private let dimensionsLabel = NSTextField(labelWithString: "")
+    private let copyButton = NSButton()
+    private let copyFeedback = CopyFeedback()
+    private let pasteboard: NSPasteboard
+    private var copyOnFirstShow: Bool
     private let onPinImage: (NSImage) -> Void
     private var fitted = false
     private var fitMode = true
@@ -27,7 +31,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         .init("beauty"), .init("pin"), .init("save"), .init("copy")
     ]
 
-    init(image: NSImage, onPin: @escaping (NSImage) -> Void) {
+    init(image: NSImage, copyAfterCapture: Bool = false, pasteboard: NSPasteboard = .general,
+         onPin: @escaping (NSImage) -> Void) {
+        self.pasteboard = pasteboard
+        copyOnFirstShow = copyAfterCapture
         let fallback = NSImage(size: NSSize(width: 1, height: 1))
         fallback.addRepresentation(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
                                                     bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
@@ -68,7 +75,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
             self?.updateZoomLabel()
         }
         updateHistoryButtons()
-        updateDimensions()
+        applyStyle(beautification.style)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -84,6 +91,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
             fitImage()
         }
         window?.makeFirstResponder(canvas)
+        if copyOnFirstShow {
+            copyOnFirstShow = false
+            copyRenderedImage(automatic: true)
+        }
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -92,6 +103,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     func windowWillClose(_ notification: Notification) {
+        copyFeedback.dismiss()
         colorPicker.closePicker()
         beautyPopover.performClose(nil)
     }
@@ -210,7 +222,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         let history = NSStackView(views: [undoButton, redoButton, clearButton])
         history.spacing = 0
         history.alignment = .centerY
-        configureIconButton(beautyButton, symbol: "slider.horizontal.3", label: "截图美化", action: #selector(toggleBeautification))
+        configureIconButton(beautyButton, symbol: "wand.and.stars", label: "截图美化", action: #selector(toggleBeautification), title: "美化")
         beautyButton.toolTip = "截图美化 · 圆角、阴影、边框与背景留白"
         let pin = NSButton()
         configureIconButton(pin, symbol: "pin", label: "贴图", action: #selector(pinImage))
@@ -218,13 +230,19 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         let save = NSButton()
         configureIconButton(save, symbol: "square.and.arrow.down", label: "保存 PNG", action: #selector(saveImage))
         save.toolTip = "保存 PNG · ⌘S"
-        let copy = NSButton(title: "复制", image: symbolImage("doc.on.doc", description: nil), target: self, action: #selector(copyImage))
+        let copy = copyButton
+        copy.title = "复制"
+        copy.image = symbolImage("doc.on.doc", description: nil)
+        copy.target = self
+        copy.action = #selector(copyImage)
         copy.bezelStyle = .recessed
         copy.showsBorderOnlyWhileMouseInside = true
         copy.font = .systemFont(ofSize: 12, weight: .medium)
         copy.imagePosition = .imageLeading
         copy.toolTip = "复制截图 · ⌘C"
         copy.setAccessibilityLabel("复制截图")
+        copy.translatesAutoresizingMaskIntoConstraints = false
+        copy.widthAnchor.constraint(equalToConstant: 76).isActive = true
         let views: [(String, String, NSView)] = [
             ("tools", "标注工具", tools), ("color", "标注颜色", colorPicker),
             ("width", "标注线宽", widthPicker), ("history", "编辑历史", history),
@@ -274,9 +292,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         return image.withSymbolConfiguration(.init(pointSize: size, weight: .regular)) ?? image
     }
 
-    private func configureIconButton(_ button: NSButton, symbol: String, label: String, action: Selector) {
+    private func configureIconButton(_ button: NSButton, symbol: String, label: String, action: Selector, title: String? = nil) {
+        button.title = title ?? ""
         button.image = symbolImage(symbol, description: label)
-        button.imagePosition = .imageOnly
+        button.imagePosition = title == nil ? .imageOnly : .imageLeading
+        button.font = .systemFont(ofSize: 12, weight: .medium)
         button.bezelStyle = .recessed
         button.showsBorderOnlyWhileMouseInside = true
         button.contentTintColor = .secondaryLabelColor
@@ -285,7 +305,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         button.toolTip = label
         button.setAccessibilityLabel(label)
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        if title == nil {
+            button.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        } else {
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 64).isActive = true
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
         button.heightAnchor.constraint(equalToConstant: 28).isActive = true
     }
 
@@ -365,13 +390,23 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     @objc private func copyImage() {
-        guard let image = styledDocument.renderedImage(), let data = pngData(image) else { showError("无法生成截图。"); return }
-        let item = NSPasteboardItem()
-        item.setData(data, forType: .png)
-        if let tiff = image.tiffRepresentation { item.setData(tiff, forType: .tiff) }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.writeObjects([item])
-        statusLabel.stringValue = "已复制截图"
+        copyRenderedImage(automatic: false)
+    }
+
+    private func copyRenderedImage(automatic: Bool) {
+        do {
+            guard let image = styledDocument.renderedImage() else { throw ImageClipboard.CopyError.invalidImage }
+            try ImageClipboard.write(image, to: pasteboard)
+            statusLabel.stringValue = automatic ? "截图已自动复制 · ⌘V 粘贴" : "已复制到剪贴板 · ⌘V 粘贴"
+            if let content = window?.contentView {
+                copyFeedback.show(in: content, button: copyButton, automatic: automatic)
+            }
+        } catch {
+            statusLabel.stringValue = error.localizedDescription
+            if let content = window?.contentView {
+                copyFeedback.show(in: content, button: copyButton, error: error.localizedDescription)
+            }
+        }
         window?.makeFirstResponder(canvas)
     }
 

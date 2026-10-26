@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var editors: [EditorWindowController] = []
     private var pins: [PinWindowController] = []
     private let workspaceWindows = WorkspaceWindowCoordinator()
-    private lazy var capture = CaptureCoordinator { [weak self] image in self?.openEditor(image) }
+    private lazy var capture = CaptureCoordinator { [weak self] image in self?.openEditor(image, copyAfterCapture: true) }
 
     private var managedWorkspaceWindows: [NSWindow] {
         [homeWindow].compactMap { $0 } + editors.compactMap(\.window) + demoStudios.compactMap(\.window) + pins.compactMap(\.window)
@@ -291,8 +291,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard panel.runModal() == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
         openEditor(image)
     }
-    private func openEditor(_ image: NSImage) {
-        let editor = EditorWindowController(image: image) { [weak self] image in
+    private func openEditor(_ image: NSImage, copyAfterCapture: Bool = false) {
+        let editor = EditorWindowController(image: image, copyAfterCapture: copyAfterCapture) { [weak self] image in
             guard let self else { return }
             let pin = PinWindowController(image: image)
             self.pins.append(pin)

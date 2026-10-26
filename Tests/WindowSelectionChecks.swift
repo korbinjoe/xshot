@@ -241,6 +241,131 @@ import AppKit
         try fixture.close()
     }
 
+    @MainActor static func checkEdgeAndCornerResizing(image: CGImage) throws {
+        let gestures: [(String, CGPoint, CGPoint, CGRect)] = [
+            ("left", CGPoint(x: 120, y: 270), CGPoint(x: 90, y: 300), CGRect(x: 90, y: 120, width: 430, height: 300)),
+            ("right", CGPoint(x: 520, y: 270), CGPoint(x: 560, y: 310), CGRect(x: 120, y: 120, width: 440, height: 300)),
+            ("top", CGPoint(x: 320, y: 120), CGPoint(x: 360, y: 90), CGRect(x: 120, y: 90, width: 400, height: 330)),
+            ("bottom", CGPoint(x: 320, y: 420), CGPoint(x: 370, y: 460), CGRect(x: 120, y: 120, width: 400, height: 340)),
+            ("top-left", CGPoint(x: 120, y: 120), CGPoint(x: 90, y: 95), CGRect(x: 90, y: 95, width: 430, height: 325)),
+            ("top-right", CGPoint(x: 520, y: 120), CGPoint(x: 560, y: 90), CGRect(x: 120, y: 90, width: 440, height: 330)),
+            ("bottom-left", CGPoint(x: 120, y: 420), CGPoint(x: 90, y: 460), CGRect(x: 90, y: 120, width: 430, height: 340)),
+            ("bottom-right", CGPoint(x: 520, y: 420), CGPoint(x: 560, y: 460), CGRect(x: 120, y: 120, width: 440, height: 340))
+        ]
+        for manual in [false, true] {
+            for (name, start, end, expected) in gestures {
+                let fixture = Fixture(image: image)
+                if manual { try fixture.drag(from: CGPoint(x: 120, y: 120), to: CGPoint(x: 520, y: 420)) }
+                else { try fixture.click(at: CGPoint(x: 250, y: 250)) }
+                var confirmed: CGRect?
+                fixture.view.onConfirm = { confirmed = $0 }
+                try fixture.drag(from: start, to: end)
+                try requireRect(fixture.view.selection, expected, "\(name) resize did not keep its opposite edges fixed (manual: \(manual))")
+                try require(fixture.view.selectedWindow == nil, "\(name) resize retained the window-capture identity")
+                try fixture.key(36, characters: "\r")
+                try requireRect(confirmed, expected, "\(name) resize confirmed a stale crop rectangle")
+                try fixture.close()
+            }
+        }
+
+        let limits: [(CGPoint, CGPoint, CGRect)] = [
+            (CGPoint(x: 120, y: 270), CGPoint(x: -100, y: 270), CGRect(x: 0, y: 120, width: 520, height: 300)),
+            (CGPoint(x: 520, y: 270), CGPoint(x: 1200, y: 270), CGRect(x: 120, y: 120, width: 780, height: 300)),
+            (CGPoint(x: 320, y: 120), CGPoint(x: 320, y: -100), CGRect(x: 120, y: 0, width: 400, height: 420)),
+            (CGPoint(x: 320, y: 420), CGPoint(x: 320, y: 1000), CGRect(x: 120, y: 120, width: 400, height: 580)),
+            (CGPoint(x: 120, y: 120), CGPoint(x: 800, y: 600), CGRect(x: 512, y: 412, width: 8, height: 8)),
+            // A grab just outside the border must preserve the grab offset.
+            (CGPoint(x: 526, y: 270), CGPoint(x: 546, y: 310), CGRect(x: 120, y: 120, width: 420, height: 300))
+        ]
+        for (start, end, expected) in limits {
+            let fixture = Fixture(image: image)
+            try fixture.click(at: CGPoint(x: 250, y: 250))
+            try fixture.drag(from: start, to: end)
+            try requireRect(fixture.view.selection, expected, "Resize lost its screen boundary, minimum size, or grab offset")
+            try fixture.close()
+        }
+
+        let reversible = Fixture(image: image)
+        try reversible.click(at: CGPoint(x: 250, y: 250))
+        reversible.view.mouseDown(with: try reversible.mouse(.leftMouseDown, at: CGPoint(x: 120, y: 270)))
+        reversible.view.mouseDragged(with: try reversible.mouse(.leftMouseDragged, at: CGPoint(x: 800, y: 270)))
+        try requireRect(reversible.view.selection, CGRect(x: 512, y: 120, width: 8, height: 300), "Dragging across the opposite edge inverted the selection")
+        reversible.view.mouseDragged(with: try reversible.mouse(.leftMouseDragged, at: CGPoint(x: 100, y: 270)))
+        reversible.view.mouseUp(with: try reversible.mouse(.leftMouseUp, at: CGPoint(x: 100, y: 270)))
+        try requireRect(reversible.view.selection, CGRect(x: 100, y: 120, width: 420, height: 300), "Resizing could not recover after reaching minimum size")
+        try reversible.close()
+
+        let clickOnly = Fixture(image: image)
+        try clickOnly.click(at: CGPoint(x: 250, y: 250))
+        try clickOnly.click(at: CGPoint(x: 120, y: 270))
+        try require(clickOnly.view.selectedWindow?.windowID == 42, "A border click without dragging lost full-window capture")
+        try clickOnly.close()
+    }
+
+    @MainActor static func checkSelectionCursors(image: CGImage) throws {
+        let previousCursor = NSCursor.current
+        defer { previousCursor.set() }
+        let fixture = Fixture(image: image)
+        func hover(_ point: CGPoint) throws {
+            let event = try fixture.mouse(.mouseMoved, at: point)
+            fixture.view.mouseMoved(with: event)
+            fixture.view.cursorUpdate(with: event)
+        }
+        func requireCursor(_ expected: NSCursor, _ message: String) throws {
+            try require(NSCursor.current.image.tiffRepresentation == expected.image.tiffRepresentation &&
+                        NSCursor.current.hotSpot == expected.hotSpot, message)
+        }
+        try require(fixture.window.acceptsMouseMovedEvents, "Selection overlay does not deliver hover events")
+        try hover(CGPoint(x: 60, y: 80))
+        try requireCursor(.crosshair, "Empty canvas did not show the selection crosshair")
+        try fixture.click(at: CGPoint(x: 250, y: 250))
+        try hover(CGPoint(x: 300, y: 250))
+        try requireCursor(.openHand, "Selection interior did not show the move cursor")
+        fixture.view.mouseDown(with: try fixture.mouse(.leftMouseDown, at: CGPoint(x: 300, y: 250)))
+        try requireCursor(.closedHand, "Moving selection did not show the dragging hand")
+        fixture.view.mouseUp(with: try fixture.mouse(.leftMouseUp, at: CGPoint(x: 300, y: 250)))
+        try requireCursor(.openHand, "Releasing selection did not restore the hover hand")
+
+        if #available(macOS 15.0, *) {
+            let positions: [(CGPoint, NSCursor.FrameResizePosition)] = [
+                (CGPoint(x: 120, y: 270), .left), (CGPoint(x: 520, y: 270), .right),
+                (CGPoint(x: 320, y: 120), .top), (CGPoint(x: 320, y: 420), .bottom),
+                (CGPoint(x: 120, y: 120), .topLeft), (CGPoint(x: 520, y: 120), .topRight),
+                (CGPoint(x: 120, y: 420), .bottomLeft), (CGPoint(x: 520, y: 420), .bottomRight)
+            ]
+            for (point, position) in positions {
+                try hover(point)
+                try requireCursor(.frameResize(position: position, directions: .all), "Resize hover cursor has the wrong edge/corner direction at \(point)")
+                fixture.view.mouseDown(with: try fixture.mouse(.leftMouseDown, at: point))
+                fixture.view.mouseDragged(with: try fixture.mouse(.leftMouseDragged, at: CGPoint(x: 700, y: 600)))
+                try requireCursor(.frameResize(position: position, directions: .all), "Resize cursor changed direction during the gesture")
+                fixture.view.mouseUp(with: try fixture.mouse(.leftMouseUp, at: CGPoint(x: 700, y: 600)))
+                fixture.view.clearSelection()
+                try fixture.click(at: CGPoint(x: 250, y: 250))
+            }
+        } else {
+            try hover(CGPoint(x: 120, y: 270))
+            try requireCursor(.resizeLeftRight, "Left edge did not show horizontal resize")
+            try hover(CGPoint(x: 320, y: 120))
+            try requireCursor(.resizeUpDown, "Top edge did not show vertical resize")
+            try hover(CGPoint(x: 120, y: 120))
+            let downDiagonal = NSCursor.current.image.tiffRepresentation
+            try hover(CGPoint(x: 520, y: 120))
+            try require(NSCursor.current.image.tiffRepresentation != downDiagonal, "Diagonal resize directions have the same cursor")
+        }
+        for button in descendants(fixture.view).compactMap({ $0 as? NSButton }).filter({ !$0.isHiddenOrHasHiddenAncestor }) {
+            let frame = button.convert(button.bounds, to: fixture.view)
+            try hover(CGPoint(x: frame.midX, y: frame.midY))
+            try requireCursor(.arrow, "Selection toolbar button inherited a canvas resize cursor")
+        }
+        fixture.view.mouseExited(with: try fixture.mouse(.mouseMoved, at: CGPoint(x: -10, y: -10)))
+        try requireCursor(.arrow, "Leaving the overlay retained a selection cursor")
+        fixture.view.clearSelection()
+        try hover(CGPoint(x: 120, y: 270))
+        try requireCursor(.crosshair, "Clearing selection retained stale resize hover zones")
+        try fixture.close()
+    }
+
     @MainActor static func checkRecordingIsolation(image: CGImage) throws {
         let fixture = Fixture(image: image)
         fixture.view.configureForRecording()
@@ -266,6 +391,10 @@ import AppKit
         try fixture.key(36, characters: "\r")
         try require(manualRects == [expected] && windowConfirmations == 0,
                     "Recording region confirmation used screenshot window routing")
+        try fixture.drag(from: CGPoint(x: 400, y: 290), to: CGPoint(x: 450, y: 320))
+        try requireRect(fixture.view.selection, CGRect(x: 220, y: 220, width: 230, height: 140), "Recording edge resize changed the wrong dimensions")
+        try fixture.drag(from: CGPoint(x: 220, y: 220), to: CGPoint(x: 600, y: 600))
+        try requireRect(fixture.view.selection, CGRect(x: 426, y: 336, width: 24, height: 24), "Recording resize did not retain its 24-point minimum")
         try fixture.close()
     }
 
@@ -279,6 +408,8 @@ import AppKit
         try checkGeometry()
         try checkClickAndConfirmation(image: image)
         try checkDragGestures(image: image)
+        try checkEdgeAndCornerResizing(image: image)
+        try checkSelectionCursors(image: image)
         try checkFullScreenAndCancel(image: image)
         try checkRecordingIsolation(image: image)
         try require(NSApp.windows.allSatisfy { !$0.isVisible }, "Checks left a visible test window")
@@ -294,11 +425,12 @@ import AppKit
                 "screenCaptureRequested": false,
                 "checks": ["front-to-back overlap", "negative and above-primary display origins", "cross-display clipping and full pixel dimensions",
                            "click without pointer motion", "sub-4-point jitter", "manual drag inside window", "selected move and resize clear window identity",
-                           "window and manual Enter routing", "accessible whole-screen button", "whole-screen toolbar non-overlap", "Command-A", "Edit-menu Select All action", "Escape", "recording isolation"]
+                           "all four edges and corners on snapped and manual selections", "resize screen bounds and minimum size", "grab offset and reversible resize", "directional hover and drag cursors", "control and empty-area cursors",
+                           "window and manual Enter routing", "accessible whole-screen button", "whole-screen toolbar non-overlap", "Command-A", "Edit-menu Select All action", "Escape", "recording isolation and resize minimum"]
             ]
             let data = try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: directory.appendingPathComponent("verification.json"), options: .atomic)
         }
-        print("PASS: window geometry, click and jitter snapping, manual drag/move/resize, Enter routing, whole-screen button/Command-A, Escape, recording isolation; all test windows hidden")
+        print("PASS: window geometry, click and jitter snapping, all eight resize handles, bounds/minimum size/grab offset, hover and drag cursors, Enter routing, whole-screen button/Command-A, Escape, recording isolation; all test windows hidden")
     }
 }

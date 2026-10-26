@@ -6,10 +6,14 @@ final class PinWindowController: NSWindowController, NSWindowDelegate {
     private let pinnedImage: NSImage
     private let imageSize: NSSize
     private let scrollView = NSScrollView()
+    private var copyButton: NSButton!
+    private let copyFeedback = CopyFeedback()
+    private let pasteboard: NSPasteboard
     private var followsWindowSize = true
     private var isAdjustingZoom = false
 
-    init(image: NSImage) {
+    init(image: NSImage, pasteboard: NSPasteboard = .general) {
+        self.pasteboard = pasteboard
         pinnedImage = (image.copy() as? NSImage) ?? image
         let fallback = image.representations.first.map {
             NSSize(width: max(1, $0.pixelsWide), height: max(1, $0.pixelsHigh))
@@ -58,6 +62,10 @@ final class PinWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    func windowWillClose(_ notification: Notification) {
+        copyFeedback.dismiss()
+    }
+
     private func buildContent(in panel: NSPanel) {
         let content = XShotPinSurfaceView()
         panel.contentView = content
@@ -95,7 +103,7 @@ final class PinWindowController: NSWindowController, NSWindowDelegate {
         toolbar.toolTip = "拖动图片移动 · 右键更多 · Esc 关闭"
         content.addSubview(toolbar)
 
-        let copyButton = makeToolbarButton(
+        copyButton = makeToolbarButton(
             symbol: "doc.on.doc", title: "复制", help: "复制原始贴图（⌘C）", action: #selector(copyImage(_:))
         )
         let saveButton = makeToolbarButton(
@@ -236,15 +244,15 @@ final class PinWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func copyImage(_ sender: Any?) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        if let png = pngData() {
-            pasteboard.setData(png, forType: .png)
-            if let tiff = pinnedImage.tiffRepresentation {
-                pasteboard.setData(tiff, forType: .tiff)
+        do {
+            try ImageClipboard.write(pinnedImage, to: pasteboard)
+            if let content = window?.contentView {
+                copyFeedback.show(in: content, button: copyButton, compact: true)
             }
-        } else {
-            pasteboard.writeObjects([pinnedImage])
+        } catch {
+            if let content = window?.contentView {
+                copyFeedback.show(in: content, button: copyButton, error: error.localizedDescription, compact: true)
+            }
         }
     }
 

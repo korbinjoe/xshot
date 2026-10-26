@@ -173,6 +173,69 @@ final class SelectionWindow: NSWindow {
 }
 
 final class RegionSelectionView: NSView {
+    private enum ResizeHandle: CaseIterable {
+        case topLeft, top, topRight, left, right, bottomLeft, bottom, bottomRight
+
+        var movesLeft: Bool { [.topLeft, .left, .bottomLeft].contains(self) }
+        var movesRight: Bool { [.topRight, .right, .bottomRight].contains(self) }
+        var movesTop: Bool { [.topLeft, .top, .topRight].contains(self) }
+        var movesBottom: Bool { [.bottomLeft, .bottom, .bottomRight].contains(self) }
+
+        func point(in rect: NSRect) -> NSPoint {
+            NSPoint(x: movesLeft ? rect.minX : movesRight ? rect.maxX : rect.midX,
+                    y: movesTop ? rect.minY : movesBottom ? rect.maxY : rect.midY)
+        }
+
+        var cursor: NSCursor {
+            if #available(macOS 15.0, *) {
+                let position: NSCursor.FrameResizePosition
+                switch self {
+                case .topLeft: position = .topLeft
+                case .top: position = .top
+                case .topRight: position = .topRight
+                case .left: position = .left
+                case .right: position = .right
+                case .bottomLeft: position = .bottomLeft
+                case .bottom: position = .bottom
+                case .bottomRight: position = .bottomRight
+                }
+                return .frameResize(position: position, directions: .all)
+            }
+            switch self {
+            case .left, .right: return .resizeLeftRight
+            case .top, .bottom: return .resizeUpDown
+            case .topLeft, .bottomRight: return Self.downDiagonalCursor
+            case .topRight, .bottomLeft: return Self.upDiagonalCursor
+            }
+        }
+
+        // macOS 14 has no public diagonal resize cursor. Draw a small outlined
+        // double arrow so it remains visible over both light and dark captures.
+        private static let downDiagonalCursor = diagonalCursor(mirrored: false)
+        private static let upDiagonalCursor = diagonalCursor(mirrored: true)
+        private static func diagonalCursor(mirrored: Bool) -> NSCursor {
+            let image = NSImage(size: NSSize(width: 24, height: 24), flipped: true) { _ in
+                func point(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
+                    NSPoint(x: mirrored ? 24 - x : x, y: y)
+                }
+                let path = NSBezierPath()
+                path.move(to: point(5, 5)); path.line(to: point(19, 19))
+                path.move(to: point(5, 11)); path.line(to: point(5, 5)); path.line(to: point(11, 5))
+                path.move(to: point(13, 19)); path.line(to: point(19, 19)); path.line(to: point(19, 13))
+                path.lineJoinStyle = .round
+                path.lineCapStyle = .round
+                NSColor.white.setStroke(); path.lineWidth = 4; path.stroke()
+                NSColor.black.setStroke(); path.lineWidth = 2; path.stroke()
+                return true
+            }
+            return NSCursor(image: image, hotSpot: NSPoint(x: 12, y: 12))
+        }
+    }
+
+    private enum DragMode {
+        case create, move, resize(ResizeHandle)
+    }
+
     private let screenshot: NSImage
     private let imageWidth: Int
     private(set) var selection: NSRect?
@@ -186,8 +249,8 @@ final class RegionSelectionView: NSView {
     private var didDrag = false
     private var anchor = NSPoint.zero
     private var originalRect = NSRect.zero
-    private var mode = 0 // 0 new, 1 move, 2 resize
-    private var opposite = NSPoint.zero
+    private var dragMode = DragMode.create
+    private var isDragging = false
     private let confirm = NSButton(title: "标注  ↩", target: nil, action: nil)
     private let cancel = NSButton(title: "取消", target: nil, action: nil)
     private let selectionToolbar = NSVisualEffectView()
@@ -212,7 +275,7 @@ final class RegionSelectionView: NSView {
         fullScreen.isHidden = true
         hoveredWindow = nil
         minimumSize = 24
-        instruction = "拖动选择录制区域  ·  拖动内部移动 / 四角调整  ·  Enter 确认  ·  Esc 取消"
+        instruction = "拖动选择录制区域  ·  内部移动 / 边角调整  ·  Enter 确认  ·  Esc 取消"
         confirm.title = "使用区域 ↩"
         confirm.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
         confirm.setAccessibilityLabel("使用此录制区域")
@@ -262,21 +325,26 @@ final class RegionSelectionView: NSView {
         setAccessibilityLabel("框选截图：拖动选择区域，Enter 编辑，Esc 取消")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
+    override func cursorUpdate(with event: NSEvent) {
+        updateCursor(at: convert(event.locationInWindow, from: nil))
+    }
     override func layout() {
         super.layout()
         fullScreen.frame = NSRect(x: max(12, bounds.width - 144), y: 18, width: 124, height: 32)
     }
     override func updateTrackingAreas() {
         if let pointerTracking { removeTrackingArea(pointerTracking) }
-        let area = NSTrackingArea(rect: .zero, options: [.activeAlways, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect], owner: self)
+        let area = NSTrackingArea(rect: .zero, options: [.activeAlways, .mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .enabledDuringMouseDrag, .inVisibleRect], owner: self)
         addTrackingArea(area)
         pointerTracking = area
         super.updateTrackingAreas()
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if let window { updateHover(at: convert(window.mouseLocationOutsideOfEventStream, from: nil)) }
+        if let window {
+            window.acceptsMouseMovedEvents = true
+            updateHover(at: convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        }
     }
     private func updateHover(at point: NSPoint) {
         guard tracksWindows, selection == nil else { return }
@@ -290,13 +358,55 @@ final class RegionSelectionView: NSView {
     override func mouseMoved(with event: NSEvent) {
         // Keyboard actions follow the display under the pointer, including after crossing screens.
         if tracksWindows, window?.isKeyWindow == false { window?.makeKey(); window?.makeFirstResponder(self) }
-        updateHover(at: convert(event.locationInWindow, from: nil))
+        let point = convert(event.locationInWindow, from: nil)
+        updateHover(at: point)
+        updateCursor(at: point)
     }
     override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
-    override func mouseExited(with event: NSEvent) { hoveredWindow = nil; needsDisplay = true }
+    override func mouseExited(with event: NSEvent) {
+        hoveredWindow = nil; needsDisplay = true
+        if !isDragging { NSCursor.arrow.set() }
+    }
+    private func isOverControl(_ point: NSPoint) -> Bool {
+        (!selectionToolbar.isHidden && selectionToolbar.frame.contains(point)) ||
+        (!fullScreen.isHidden && fullScreen.frame.contains(point))
+    }
+    private func resizeHandle(at point: NSPoint, in rect: NSRect) -> ResizeHandle? {
+        let tolerance: CGFloat = 8
+        guard rect.insetBy(dx: -tolerance, dy: -tolerance).contains(point) else { return nil }
+        let nearX = min(abs(point.x - rect.minX), abs(point.x - rect.maxX)) <= tolerance
+        let nearY = min(abs(point.y - rect.minY), abs(point.y - rect.maxY)) <= tolerance
+        if nearX && nearY {
+            return point.y < rect.midY
+                ? (point.x < rect.midX ? .topLeft : .topRight)
+                : (point.x < rect.midX ? .bottomLeft : .bottomRight)
+        }
+        if nearX { return point.x < rect.midX ? .left : .right }
+        if nearY { return point.y < rect.midY ? .top : .bottom }
+        return nil
+    }
+    private func updateCursor(at point: NSPoint) {
+        if isDragging {
+            switch dragMode {
+            case .create: NSCursor.crosshair.set()
+            case .move: NSCursor.closedHand.set()
+            case .resize(let handle): handle.cursor.set()
+            }
+        } else if isOverControl(point) || !bounds.contains(point) {
+            NSCursor.arrow.set()
+        } else if let rect = selection, let handle = resizeHandle(at: point, in: rect) {
+            handle.cursor.set()
+        } else if selection?.contains(point) == true {
+            NSCursor.openHand.set()
+        } else {
+            NSCursor.crosshair.set()
+        }
+    }
     func clearSelection() {
         selection = nil; selectedWindow = nil; hoveredWindow = nil; pendingWindow = nil
+        isDragging = false; didDrag = false; dragMode = .create
         selectionToolbar.isHidden = true; needsDisplay = true
+        if let window { updateCursor(at: convert(window.mouseLocationOutsideOfEventStream, from: nil)) }
     }
     override func draw(_ dirtyRect: NSRect) {
         screenshot.draw(in: bounds, from: .zero, operation: .copy, fraction: 1, respectFlipped: true, hints: nil)
@@ -308,7 +418,7 @@ final class RegionSelectionView: NSView {
         if let rect = highlighted {
             (selection == nil ? NSColor.controlAccentColor : NSColor.white).setStroke()
             let outline = NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5)); outline.lineWidth = 1; outline.stroke()
-            for point in selection == nil ? [] : corners(rect) {
+            for point in selection == nil ? [] : ResizeHandle.allCases.map({ $0.point(in: rect) }) {
                 NSColor.white.setFill(); NSBezierPath(ovalIn: NSRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8)).fill()
                 NSColor.controlAccentColor.setStroke(); NSBezierPath(ovalIn: NSRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8)).stroke()
             }
@@ -330,50 +440,64 @@ final class RegionSelectionView: NSView {
         NSBezierPath(roundedRect: NSRect(x: origin.x - 8, y: origin.y - 4, width: size.width + 16, height: size.height + 8), xRadius: 6, yRadius: 6).fill()
         (value as NSString).draw(at: origin, withAttributes: attributes)
     }
-    private func corners(_ rect: NSRect) -> [NSPoint] {
-        [NSPoint(x: rect.minX, y: rect.minY), NSPoint(x: rect.maxX, y: rect.minY), NSPoint(x: rect.minX, y: rect.maxY), NSPoint(x: rect.maxX, y: rect.maxY)]
-    }
     private func clamped(_ point: NSPoint) -> NSPoint {
         NSPoint(x: min(max(point.x, 0), bounds.width), y: min(max(point.y, 0), bounds.height))
     }
     override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard !isOverControl(point) else { return }
         window?.makeKey(); window?.makeFirstResponder(self)
         onBegin?()
-        anchor = clamped(convert(event.locationInWindow, from: nil))
+        anchor = clamped(point)
         didDrag = false
+        isDragging = true
         pendingWindow = nil
         selectionToolbar.isHidden = true
         if let rect = selection {
-            let points = corners(rect)
-            if let index = points.firstIndex(where: { hypot($0.x - anchor.x, $0.y - anchor.y) < 13 }) {
-                mode = 2; opposite = points[3 - index]
+            originalRect = rect
+            if let handle = resizeHandle(at: anchor, in: rect) {
+                dragMode = .resize(handle)
             } else if rect.contains(anchor) {
-                mode = 1; originalRect = rect
-                if event.clickCount == 2 { acceptSelection(); return }
-            } else { mode = 0; selection = nil; selectedWindow = nil }
-        } else { mode = 0 }
-        if mode == 0, tracksWindows { pendingWindow = WindowSelectionTarget.hit(at: anchor, on: displayBounds, in: windowTargets) }
+                dragMode = .move
+                if event.clickCount == 2 { isDragging = false; acceptSelection(); return }
+            } else { dragMode = .create; selection = nil; selectedWindow = nil }
+        } else { dragMode = .create }
+        if case .create = dragMode, tracksWindows { pendingWindow = WindowSelectionTarget.hit(at: anchor, on: displayBounds, in: windowTargets) }
+        updateCursor(at: anchor)
         needsDisplay = true
     }
     override func mouseDragged(with event: NSEvent) {
+        guard isDragging else { return }
         let point = clamped(convert(event.locationInWindow, from: nil))
         guard didDrag || hypot(point.x - anchor.x, point.y - anchor.y) >= 4 else { return }
         didDrag = true
         selectedWindow = nil
         hoveredWindow = nil
-        if mode == 1 {
+        switch dragMode {
+        case .move:
             var rect = originalRect.offsetBy(dx: point.x - anchor.x, dy: point.y - anchor.y)
             rect.origin.x = min(max(rect.origin.x, 0), bounds.width - rect.width)
             rect.origin.y = min(max(rect.origin.y, 0), bounds.height - rect.height)
             selection = rect
-        } else {
-            let start = mode == 2 ? opposite : anchor
-            selection = NSRect(x: min(start.x, point.x), y: min(start.y, point.y), width: abs(start.x - point.x), height: abs(start.y - point.y))
+        case .resize(let handle):
+            let dx = point.x - anchor.x, dy = point.y - anchor.y
+            var minX = originalRect.minX, maxX = originalRect.maxX
+            var minY = originalRect.minY, maxY = originalRect.maxY
+            if handle.movesLeft { minX = min(max(minX + dx, bounds.minX), maxX - minimumSize) }
+            if handle.movesRight { maxX = max(min(maxX + dx, bounds.maxX), minX + minimumSize) }
+            if handle.movesTop { minY = min(max(minY + dy, bounds.minY), maxY - minimumSize) }
+            if handle.movesBottom { maxY = max(min(maxY + dy, bounds.maxY), minY + minimumSize) }
+            selection = NSRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        case .create:
+            selection = NSRect(x: min(anchor.x, point.x), y: min(anchor.y, point.y), width: abs(anchor.x - point.x), height: abs(anchor.y - point.y))
         }
+        updateCursor(at: point)
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) {
-        if !didDrag, mode == 0, let target = pendingWindow {
+        guard isDragging else { return }
+        isDragging = false
+        if !didDrag, case .create = dragMode, let target = pendingWindow {
             selectedWindow = target
             selection = target.visibleRect(on: displayBounds)
             hoveredWindow = nil
@@ -381,6 +505,7 @@ final class RegionSelectionView: NSView {
         pendingWindow = nil
         guard let rect = selection, rect.width >= minimumSize, rect.height >= minimumSize else { clearSelection(); return }
         showSelectionToolbar(for: rect)
+        updateCursor(at: convert(event.locationInWindow, from: nil))
         needsDisplay = true
     }
     private func showSelectionToolbar(for rect: NSRect) {
@@ -416,6 +541,7 @@ final class RegionSelectionView: NSView {
         selectedWindow = nil; hoveredWindow = nil; pendingWindow = nil
         selection = bounds
         showSelectionToolbar(for: bounds)
+        if let window { updateCursor(at: convert(window.mouseLocationOutsideOfEventStream, from: nil)) }
         needsDisplay = true
     }
     @objc private func cancelSelection() { onCancel?() }

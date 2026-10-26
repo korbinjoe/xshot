@@ -3,7 +3,7 @@ import AppKit
 /// Beautification values use original-image pixels, independently of display zoom.
 struct ScreenshotStyle: Equatable {
     var isEnabled = false
-    var padding: CGFloat = 48
+    var padding: CGFloat = 32
     var cornerRadius: CGFloat = 16
     var shadow = true
     var borderWidth: CGFloat = 1
@@ -24,6 +24,8 @@ struct ScreenshotStyle: Equatable {
     }
 
     static let plain = ScreenshotStyle()
+    static let lightShadow = ScreenshotStyle(isEnabled: true, padding: 24, cornerRadius: 12,
+                                              shadow: true, borderWidth: 1, background: .transparent)
 }
 
 enum ScreenshotBeautifier {
@@ -45,8 +47,9 @@ enum ScreenshotBeautifier {
                           contentRect: NSRect(x: 0, y: 0, width: width, height: height))
         }
         let requestedPadding = style.padding.isFinite ? max(0, style.padding) : 0
-        // Three blur radii plus the downward offset retain the visible shadow.
-        let shadowMargin = style.shadow ? shadowBlur * 3 + shadowOffset : 0
+        // Quartz's visible shadow fades within the blur width plus its offset.
+        // Two extra pixels keep the edge clear without adding a wide empty rim.
+        let shadowMargin = style.shadow ? shadowBlur + shadowOffset + 2 : 0
         let padding = ceil(max(requestedPadding, shadowMargin))
         return Layout(size: NSSize(width: width + padding * 2, height: height + padding * 2),
                       contentRect: NSRect(x: padding, y: padding, width: width, height: height))

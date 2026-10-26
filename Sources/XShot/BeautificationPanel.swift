@@ -2,7 +2,7 @@ import AppKit
 
 final class BeautificationPanel: NSViewController {
     var onChange: ((ScreenshotStyle) -> Void)?
-    private(set) var style = ScreenshotStyle.plain
+    private(set) var style = ScreenshotStyle.lightShadow
     private let enabled = NSButton(checkboxWithTitle: "启用截图美化", target: nil, action: nil)
     private let presets = NSSegmentedControl(labels: ["原图", "轻影", "留白", "展示"], trackingMode: .selectOne, target: nil, action: nil)
     private let background = NSPopUpButton()
@@ -11,7 +11,7 @@ final class BeautificationPanel: NSViewController {
     private let radiusValue = NSTextField(labelWithString: "16 px")
     private let shadow = NSButton(checkboxWithTitle: "柔和阴影", target: nil, action: nil)
     private let border = NSButton(checkboxWithTitle: "细边框", target: nil, action: nil)
-    private let paddingValues: [CGFloat] = [0, 24, 48, 64, 80, 96]
+    private let paddingValues: [CGFloat] = [0, 8, 16, 24, 32, 48, 64, 80, 96]
 
     override func loadView() {
         let root = NSView()
@@ -26,7 +26,7 @@ final class BeautificationPanel: NSViewController {
         presets.target = self
         presets.action = #selector(selectPreset)
         presets.segmentStyle = .rounded
-        presets.selectedSegment = 0
+        presets.selectedSegment = 1
         presets.setAccessibilityLabel("美化预设")
         for (index, name) in ["原图", "轻影", "留白", "展示"].enumerated() { presets.setToolTip(name, forSegment: index) }
         background.addItems(withTitles: ScreenshotStyle.Background.allCases.map(\.title))
@@ -96,7 +96,7 @@ final class BeautificationPanel: NSViewController {
     private func refreshControls() {
         enabled.state = style.isEnabled ? .on : .off
         background.selectItem(at: style.background.rawValue)
-        padding.selectItem(at: paddingValues.firstIndex(of: style.padding) ?? 2)
+        padding.selectItem(at: paddingValues.firstIndex(of: style.padding) ?? 0)
         radius.doubleValue = Double(style.cornerRadius)
         radiusValue.stringValue = "\(Int(style.cornerRadius)) px"
         shadow.state = style.shadow ? .on : .off
@@ -119,11 +119,11 @@ final class BeautificationPanel: NSViewController {
         switch presets.selectedSegment {
         case 0: style.isEnabled = false
         case 1:
-            style = ScreenshotStyle(isEnabled: true, padding: 48, cornerRadius: 12, shadow: true, borderWidth: 1, background: .transparent)
+            style = .lightShadow
         case 2:
-            style = ScreenshotStyle(isEnabled: true, padding: 64, cornerRadius: 16, shadow: true, borderWidth: 1, background: .mist)
+            style = ScreenshotStyle(isEnabled: true, padding: 32, cornerRadius: 16, shadow: true, borderWidth: 1, background: .mist)
         case 3:
-            style = ScreenshotStyle(isEnabled: true, padding: 80, cornerRadius: 24, shadow: true, borderWidth: 0, background: .blue)
+            style = ScreenshotStyle(isEnabled: true, padding: 48, cornerRadius: 24, shadow: true, borderWidth: 0, background: .blue)
         default: break
         }
         publish()
