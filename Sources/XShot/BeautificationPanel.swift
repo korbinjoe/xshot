@@ -2,7 +2,7 @@ import AppKit
 
 final class BeautificationPanel: NSViewController {
     var onChange: ((ScreenshotStyle) -> Void)?
-    private(set) var style = ScreenshotStyle.lightShadow
+    private(set) var style: ScreenshotStyle
     private let enabled = NSButton(checkboxWithTitle: "启用截图美化", target: nil, action: nil)
     private let presets = NSSegmentedControl(labels: ["原图", "轻影", "留白", "展示"], trackingMode: .selectOne, target: nil, action: nil)
     private let background = NSPopUpButton()
@@ -11,14 +11,31 @@ final class BeautificationPanel: NSViewController {
     private let radiusValue = NSTextField(labelWithString: "16 px")
     private let shadow = NSButton(checkboxWithTitle: "柔和阴影", target: nil, action: nil)
     private let border = NSButton(checkboxWithTitle: "细边框", target: nil, action: nil)
-    private let paddingValues: [CGFloat] = [0, 8, 16, 24, 32, 48, 64, 80, 96]
+    private let paddingValues = AppSettings.paddingValues
+    private let presetStyles: [ScreenshotStyle] = [
+        .plain, .lightShadow,
+        ScreenshotStyle(isEnabled: true, padding: 32, cornerRadius: 16, shadow: true, borderWidth: 1, background: .mist),
+        ScreenshotStyle(isEnabled: true, padding: 48, cornerRadius: 24, shadow: true, borderWidth: 0, background: .blue)
+    ]
+
+    init(style: ScreenshotStyle = .lightShadow, title: String = "截图美化") {
+        self.style = style
+        super.init(nibName: nil, bundle: nil)
+        self.title = title
+    }
+    required init?(coder: NSCoder) { nil }
+
+    func setStyle(_ style: ScreenshotStyle) {
+        self.style = style
+        if isViewLoaded { refreshControls() }
+    }
 
     override func loadView() {
         let root = NSView()
         root.translatesAutoresizingMaskIntoConstraints = false
         view = root
         preferredContentSize = NSSize(width: 286, height: 414)
-        let title = NSTextField(labelWithString: "截图美化")
+        let title = NSTextField(labelWithString: self.title ?? "截图美化")
         title.font = .systemFont(ofSize: 15, weight: .semibold)
         enabled.target = self
         enabled.action = #selector(toggleEnabled)
@@ -51,7 +68,7 @@ final class BeautificationPanel: NSViewController {
             button.target = self
             button.action = #selector(changeOptions)
         }
-        let note = NSTextField(wrappingLabelWithString: "效果会用于复制、保存和贴图。\n阴影会适当增加外侧留白。")
+        let note = NSTextField(wrappingLabelWithString: "效果会用于复制、保存和贴图。\n留白按设置值输出，超出画布的阴影会裁切。")
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
         note.maximumNumberOfLines = 3
@@ -94,6 +111,7 @@ final class BeautificationPanel: NSViewController {
     }
 
     private func refreshControls() {
+        presets.selectedSegment = style.isEnabled ? presetStyles.firstIndex(of: style) ?? -1 : 0
         enabled.state = style.isEnabled ? .on : .off
         background.selectItem(at: style.background.rawValue)
         padding.selectItem(at: paddingValues.firstIndex(of: style.padding) ?? 0)
@@ -116,16 +134,8 @@ final class BeautificationPanel: NSViewController {
     }
 
     @objc private func selectPreset() {
-        switch presets.selectedSegment {
-        case 0: style.isEnabled = false
-        case 1:
-            style = .lightShadow
-        case 2:
-            style = ScreenshotStyle(isEnabled: true, padding: 32, cornerRadius: 16, shadow: true, borderWidth: 1, background: .mist)
-        case 3:
-            style = ScreenshotStyle(isEnabled: true, padding: 48, cornerRadius: 24, shadow: true, borderWidth: 0, background: .blue)
-        default: break
-        }
+        guard presetStyles.indices.contains(presets.selectedSegment) else { return }
+        style = presetStyles[presets.selectedSegment]
         publish()
     }
 

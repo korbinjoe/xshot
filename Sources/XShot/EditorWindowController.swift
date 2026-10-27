@@ -9,6 +9,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     private let beautyButton = NSButton()
     private let scrollView = NSScrollView()
     private let colorPicker = AnnotationColorPicker()
+    private let tools = NSSegmentedControl()
+    private let shortcutHelp = ScreenshotShortcutHelp(context: .editor)
     private let widthPicker = NSPopUpButton()
     private let undoButton = NSButton()
     private let redoButton = NSButton()
@@ -28,19 +30,28 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     private var toolbarItems: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
     private let toolbarOrder: [NSToolbarItem.Identifier] = [
         .init("tools"), .init("color"), .init("width"), .init("history"), .flexibleSpace,
-        .init("beauty"), .init("pin"), .init("save"), .init("copy")
+        .init("beauty"), .init("settings"), .init("pin"), .init("save"), .init("copy")
     ]
 
-    init(image: NSImage, copyAfterCapture: Bool = false, pasteboard: NSPasteboard = .general,
+    init(image: NSImage, annotationCanvas: AnnotationCanvas? = nil,
+         copyAfterCapture: Bool = false, pasteboard: NSPasteboard = .general,
+         settings: AppSettings = .shared,
          onPin: @escaping (NSImage) -> Void) {
         self.pasteboard = pasteboard
-        copyOnFirstShow = copyAfterCapture
+        copyOnFirstShow = copyAfterCapture && settings.values.copyWhenOpeningCapturedImage
+        beautification.setStyle(settings.values.style)
         let fallback = NSImage(size: NSSize(width: 1, height: 1))
         fallback.addRepresentation(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
                                                     bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                                                     isPlanar: false, colorSpaceName: .deviceRGB,
                                                     bytesPerRow: 0, bitsPerPixel: 0)!)
-        canvas = AnnotationCanvas(image: image) ?? AnnotationCanvas(image: fallback)!
+        canvas = annotationCanvas ?? AnnotationCanvas(image: image) ?? AnnotationCanvas(image: fallback)!
+        canvas.onConfirm = nil
+        canvas.onCancel = nil
+        if annotationCanvas == nil {
+            canvas.inkColor = settings.values.inkColor.color
+            canvas.strokeWidth = settings.values.lineWidth
+        }
         styledDocument = StyledCanvasDocument(canvas: canvas)
         onPinImage = onPin
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
@@ -60,6 +71,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         window.delegate = self
         buildInterface()
         buildToolbar()
+        colorPicker.setColor(canvas.inkColor)
         beautification.onChange = { [weak self] style in self?.applyStyle(style) }
         beautyPopover.contentViewController = beautification
         beautyPopover.behavior = .transient
@@ -68,6 +80,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         canvas.onChange = { [weak self] in self?.updateHistoryButtons() }
         canvas.onCopy = { [weak self] in self?.copyImage() }
         canvas.onSave = { [weak self] in self?.saveImage() }
+        canvas.onShortcut = { [weak self] in self?.handleShortcut($0) ?? false }
         magnificationObserver = NotificationCenter.default.addObserver(
             forName: NSScrollView.didEndLiveMagnifyNotification, object: scrollView, queue: .main
         ) { [weak self] _ in
@@ -106,6 +119,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         copyFeedback.dismiss()
         colorPicker.closePicker()
         beautyPopover.performClose(nil)
+        shortcutHelp.close()
     }
 
     private func buildInterface() {
@@ -131,6 +145,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         let zoomIn = NSButton()
         configureIconButton(zoomOut, symbol: "minus", label: "缩小画布", action: #selector(EditorWindowController.zoomOut))
         configureIconButton(zoomIn, symbol: "plus", label: "放大画布", action: #selector(EditorWindowController.zoomIn))
+        zoomOut.toolTip = "缩小画布 · ⌘−"
+        zoomIn.toolTip = "放大画布 · ⌘+"
         zoomLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         zoomLabel.textColor = .secondaryLabelColor
         zoomLabel.alignment = .center
@@ -138,11 +154,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         zoomLabel.widthAnchor.constraint(equalToConstant: 42).isActive = true
         let fit = NSButton()
         configureIconButton(fit, symbol: "arrow.down.right.and.arrow.up.left", label: "适合窗口", action: #selector(fitImage))
+        fit.toolTip = "适合窗口 · ⌘9"
         let actualSize = NSButton(title: "100%", target: self, action: #selector(actualPixels))
         actualSize.isBordered = false
         actualSize.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
         actualSize.contentTintColor = .secondaryLabelColor
-        actualSize.toolTip = "以原始像素显示"
+        actualSize.toolTip = "以原始像素显示 · ⌘1"
         actualSize.setAccessibilityLabel("原始像素缩放")
         let dimensions = dimensionsLabel
         dimensions.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
@@ -154,7 +171,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         statusLabel.alignment = .center
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         statusLabel.setAccessibilityLabel("标注操作提示")
-        let zoom = NSStackView(views: [zoomOut, zoomLabel, zoomIn, divider(height: 14), fit, actualSize])
+        let zoom = NSStackView(views: [zoomOut, zoomLabel, zoomIn, divider(height: 14), fit, actualSize, shortcutHelp.button])
         zoom.alignment = .centerY
         zoom.spacing = 3
         zoom.translatesAutoresizingMaskIntoConstraints = false
@@ -193,20 +210,25 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     private func buildToolbar() {
         let symbols = ["rectangle", "arrow.up.right", "pencil.tip", "textformat", "square.grid.3x3.fill"]
-        let tools = NSSegmentedControl(images: symbols.enumerated().map { index, symbol in
-            symbolImage(symbol, description: AnnotationCanvas.Tool.allCases[index].title, size: 14)
-        }, trackingMode: .selectOne, target: self, action: #selector(selectTool(_:)))
-        tools.selectedSegment = 0
+        tools.segmentCount = symbols.count
+        tools.trackingMode = .selectOne
+        tools.target = self
+        tools.action = #selector(selectTool(_:))
+        tools.selectedSegment = canvas.tool.rawValue
         tools.segmentStyle = .automatic
         tools.setAccessibilityLabel("标注工具")
         for (index, tool) in AnnotationCanvas.Tool.allCases.enumerated() {
             tools.setWidth(30, forSegment: index)
-            tools.setToolTip(tool.title, forSegment: index)
+            tools.setImage(symbolImage(symbols[index], description: tool.title, size: 14), forSegment: index)
+            tools.setToolTip("\(tool.title) · \(tool.shortcut)", forSegment: index)
         }
         colorPicker.onBeginSelection = { [weak self] in self?.canvas.finishTextEditing() }
-        colorPicker.onColorChange = { [weak self] color in self?.canvas.inkColor = color }
+        colorPicker.onColorChange = { [weak self] color in
+            self?.canvas.inkColor = color
+            self?.window?.makeFirstResponder(self?.canvas)
+        }
         widthPicker.addItems(withTitles: ["2 px", "4 px", "8 px", "12 px"])
-        widthPicker.selectItem(at: 1)
+        widthPicker.selectItem(at: AppSettings.lineWidths.firstIndex(of: canvas.strokeWidth) ?? 1)
         widthPicker.target = self
         widthPicker.action = #selector(changeWidth(_:))
         widthPicker.bezelStyle = .texturedRounded
@@ -214,19 +236,25 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         widthPicker.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         widthPicker.translatesAutoresizingMaskIntoConstraints = false
         widthPicker.widthAnchor.constraint(equalToConstant: 62).isActive = true
-        widthPicker.toolTip = "标注线宽（图像像素）"
+        widthPicker.toolTip = "标注线宽 · [ 减小 / ] 增大（图像像素）"
         widthPicker.setAccessibilityLabel("标注线宽")
         configureIconButton(undoButton, symbol: "arrow.uturn.backward", label: "撤销", action: #selector(undoMark))
         configureIconButton(redoButton, symbol: "arrow.uturn.forward", label: "重做", action: #selector(redoMark))
         configureIconButton(clearButton, symbol: "trash", label: "清空标注", action: #selector(clearMarks))
+        undoButton.toolTip = "撤销 · ⌘Z"
+        redoButton.toolTip = "重做 · ⇧⌘Z"
+        clearButton.toolTip = "清空标注 · ⇧⌘⌫（可撤销）"
         let history = NSStackView(views: [undoButton, redoButton, clearButton])
         history.spacing = 0
         history.alignment = .centerY
         configureIconButton(beautyButton, symbol: "wand.and.stars", label: "截图美化", action: #selector(toggleBeautification), title: "美化")
-        beautyButton.toolTip = "截图美化 · 圆角、阴影、边框与背景留白"
+        beautyButton.toolTip = "截图美化 · ⇧⌘B · 圆角、阴影、边框与背景留白"
+        let settings = NSButton()
+        configureIconButton(settings, symbol: "gearshape", label: "打开设置", action: #selector(openSettings))
+        settings.toolTip = "设置 · ⌘,"
         let pin = NSButton()
         configureIconButton(pin, symbol: "pin", label: "贴图", action: #selector(pinImage))
-        pin.toolTip = "将截图悬浮在桌面"
+        pin.toolTip = "将截图悬浮在桌面 · ⇧⌘P"
         let save = NSButton()
         configureIconButton(save, symbol: "square.and.arrow.down", label: "保存 PNG", action: #selector(saveImage))
         save.toolTip = "保存 PNG · ⌘S"
@@ -246,7 +274,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         let views: [(String, String, NSView)] = [
             ("tools", "标注工具", tools), ("color", "标注颜色", colorPicker),
             ("width", "标注线宽", widthPicker), ("history", "编辑历史", history),
-            ("beauty", "截图美化", beautyButton), ("pin", "贴图", pin),
+            ("beauty", "截图美化", beautyButton), ("settings", "设置", settings), ("pin", "贴图", pin),
             ("save", "保存 PNG", save), ("copy", "复制截图", copy)
         ]
         for (key, label, view) in views {
@@ -317,16 +345,42 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     @objc private func selectTool(_ sender: NSSegmentedControl) {
         guard let tool = AnnotationCanvas.Tool(rawValue: sender.selectedSegment) else { return }
         canvas.tool = tool
-        statusLabel.stringValue = tool == .text ? "单击输入文字 · 回车完成" : "拖动绘制\(tool.title)"
+        statusLabel.stringValue = tool == .text ? "单击输入文字 · 回车完成" : "拖动绘制\(tool.title) · ? 快捷键"
         window?.makeFirstResponder(canvas)
     }
 
     @objc private func changeWidth(_ sender: NSPopUpButton) {
         canvas.strokeWidth = [CGFloat(2), 4, 8, 12][max(0, sender.indexOfSelectedItem)]
+        window?.makeFirstResponder(canvas)
     }
-    @objc private func undoMark() { canvas.undoAnnotation() }
-    @objc private func redoMark() { canvas.redoAnnotation() }
-    @objc private func clearMarks() { canvas.clearAnnotations() }
+    @objc private func undoMark() { canvas.undoAnnotation(); window?.makeFirstResponder(canvas) }
+    @objc private func redoMark() { canvas.redoAnnotation(); window?.makeFirstResponder(canvas) }
+    @objc private func clearMarks() { canvas.clearAnnotations(); window?.makeFirstResponder(canvas) }
+    @objc private func openSettings() { NSApp.sendAction(#selector(SettingsPresenting.showSettings(_:)), to: nil, from: self) }
+
+    private func handleShortcut(_ shortcut: ScreenshotShortcut) -> Bool {
+        switch shortcut {
+        case .tool(let tool):
+            tools.selectedSegment = tool.rawValue
+            selectTool(tools)
+        case .color(let index):
+            guard AppSettings.InkColor.allCases.indices.contains(index) else { return false }
+            colorPicker.setColor(AppSettings.InkColor.allCases[index].color)
+        case .width(let delta):
+            widthPicker.selectItem(at: max(0, min(AppSettings.lineWidths.count - 1, widthPicker.indexOfSelectedItem + delta)))
+            changeWidth(widthPicker)
+        case .clear: clearMarks()
+        case .beautify: toggleBeautification()
+        case .pin: pinImage()
+        case .zoomIn: zoomIn()
+        case .zoomOut: zoomOut()
+        case .actualSize: actualPixels()
+        case .fit: fitImage()
+        case .help: shortcutHelp.toggle()
+        default: return false
+        }
+        return true
+    }
 
     @objc private func toggleBeautification() {
         if beautyPopover.isShown { beautyPopover.performClose(nil); return }

@@ -209,15 +209,30 @@ import AppKit
         precondition(roundedPixels.rgba(32 + 240, 32 + 30) == original.rgba(240, 30), "Corner clipping damaged image interior")
         try save(rounded, "04-transparent-corners.png", in: directory)
 
-        // Zero requested padding still needs room to retain a visible, uncut shadow.
+        // An explicit zero must not acquire an invisible 24 px minimum.
         style.padding = 0
         style.shadow = true
+        let zeroPadding = render(source, style)
+        precondition(zeroPadding.width == source.width && zeroPadding.height == source.height)
+        style.shadow = false
+        precondition(Pixels(render(source, style)).data == Pixels(zeroPadding).data,
+                     "A zero-padding shadow must not dirty the transparent corner cutouts")
+        style.shadow = true
+        for padding in [CGFloat(8), 16, 24] {
+            style.padding = padding
+            let exact = render(source, style)
+            precondition(exact.width == source.width + Int(padding * 2) && exact.height == source.height + Int(padding * 2),
+                         "Shadow must respect every explicit padding value")
+        }
+        try save(zeroPadding, "05-zero-padding-shadow.png", in: directory)
+        // Sufficient explicit padding retains the complete shadow.
+        style.padding = 24
         let shadowed = render(source, style)
         let shadowPixels = Pixels(shadowed)
         let shadowLayout = ScreenshotBeautifier.layout(for: NSSize(width: source.width, height: source.height), style: style)
         let content = shadowLayout.contentRect
         let insetX = Int(content.minX), insetY = Int(content.minY)
-        precondition(insetX > 0 && insetY > 0, "Shadow has no protective margin")
+        precondition(insetX == 24 && insetY == 24, "Explicit shadow padding was not respected")
         var exteriorShadowPixels = 0
         for y in 0..<shadowed.height { for x in 0..<shadowed.width {
             if !content.contains(NSPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5)) && shadowPixels.alpha(x, y) > 1 {

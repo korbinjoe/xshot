@@ -5,6 +5,8 @@ final class AnnotationCanvas: NSView, NSTextFieldDelegate {
     enum Tool: Int, CaseIterable {
         case rectangle, arrow, pen, text, mosaic
 
+        var shortcut: String { ["R", "A", "P", "T", "M"][rawValue] }
+
         var title: String {
             switch self {
             case .rectangle: return "矩形"
@@ -39,6 +41,9 @@ final class AnnotationCanvas: NSView, NSTextFieldDelegate {
     var onCopy: (() -> Void)?
     var onSave: (() -> Void)?
     var onPin: (() -> Void)?
+    var onConfirm: (() -> Void)?
+    var onCancel: (() -> Void)?
+    var onShortcut: ((ScreenshotShortcut) -> Bool)?
 
     private var marks: [Mark] = []
     private var undoStates: [[Mark]] = []
@@ -66,7 +71,7 @@ final class AnnotationCanvas: NSView, NSTextFieldDelegate {
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
         setAccessibilityLabel("截图标注画布")
-        setAccessibilityHelp("在图像上拖动绘制标注。文字工具单击后输入，回车完成。")
+        setAccessibilityHelp("R 矩形、A 箭头、P 画笔、T 文字、M 马赛克。1–8 选择颜色，[ 和 ] 调整线宽，? 查看快捷键。文字工具单击后输入，回车完成。")
     }
 
     required init?(coder: NSCoder) { nil }
@@ -133,20 +138,27 @@ final class AnnotationCanvas: NSView, NSTextFieldDelegate {
     override func keyDown(with event: NSEvent) {
         // Command shortcuts only run while the canvas owns keyboard focus. A text
         // field or an input method therefore retains its normal editing behavior.
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags.contains(.command), let key = event.charactersIgnoringModifiers?.lowercased() {
+        let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if let shortcut = ScreenshotShortcut.action(for: event) {
+            // Do not switch tools or mutate a selection during an unfinished stroke.
+            if pending != nil { return }
+            if onShortcut?(shortcut) == true { return }
+        }
+        if (flags == .command || flags == [.command, .shift]), let key = event.charactersIgnoringModifiers?.lowercased() {
             switch key {
             case "z": flags.contains(.shift) ? redoAnnotation() : undoAnnotation(); return
-            case "c": onCopy?(); return
-            case "s": onSave?(); return
+            case "c" where flags == .command: onCopy?(); return
+            case "s" where flags == .command: onSave?(); return
             default: break
             }
         }
-        if event.keyCode == 53 {
+        if event.keyCode == 53, flags.isEmpty {
             pending = nil
             needsDisplay = true
+            onCancel?()
             return
         }
+        if flags.isEmpty, (event.keyCode == 36 || event.keyCode == 76), let onConfirm { onConfirm(); return }
         super.keyDown(with: event)
     }
 
@@ -157,6 +169,9 @@ final class AnnotationCanvas: NSView, NSTextFieldDelegate {
     @objc func redo(_ sender: Any?) { redoAnnotation() }
     @objc func copy(_ sender: Any?) { onCopy?() }
     @objc func saveDocument(_ sender: Any?) { onSave?() }
+    override func selectAll(_ sender: Any?) {
+        if pending == nil { _ = onShortcut?(.selectAll) }
+    }
 
     func undoAnnotation() {
         finishTextEditing()

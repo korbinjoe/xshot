@@ -1,7 +1,7 @@
 import AppKit
 
 /// Beautification values use original-image pixels, independently of display zoom.
-struct ScreenshotStyle: Equatable {
+struct ScreenshotStyle: Equatable, Codable {
     var isEnabled = false
     var padding: CGFloat = 32
     var cornerRadius: CGFloat = 16
@@ -9,7 +9,7 @@ struct ScreenshotStyle: Equatable {
     var borderWidth: CGFloat = 1
     var background: Background = .mist
 
-    enum Background: Int, CaseIterable {
+    enum Background: Int, CaseIterable, Codable {
         case transparent, white, mist, midnight, blue
 
         var title: String {
@@ -37,6 +37,7 @@ enum ScreenshotBeautifier {
 
     private static let shadowBlur: CGFloat = 16
     private static let shadowOffset: CGFloat = 6
+    static var shadowMargin: CGFloat { shadowBlur + shadowOffset + 2 }
     private static let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
 
     static func layout(for sourceSize: NSSize, style: ScreenshotStyle) -> Layout {
@@ -47,15 +48,13 @@ enum ScreenshotBeautifier {
                           contentRect: NSRect(x: 0, y: 0, width: width, height: height))
         }
         let requestedPadding = style.padding.isFinite ? max(0, style.padding) : 0
-        // Quartz's visible shadow fades within the blur width plus its offset.
-        // Two extra pixels keep the edge clear without adding a wide empty rim.
-        let shadowMargin = style.shadow ? shadowBlur + shadowOffset + 2 : 0
-        let padding = ceil(max(requestedPadding, shadowMargin))
+        // Explicit padding wins; shadows are clipped to the chosen export canvas.
+        let padding = ceil(requestedPadding)
         return Layout(size: NSSize(width: width + padding * 2, height: height + padding * 2),
                       contentRect: NSRect(x: padding, y: padding, width: width, height: height))
     }
 
-    static func render(_ source: CGImage, style: ScreenshotStyle) -> CGImage? {
+    static func render(_ source: CGImage, style: ScreenshotStyle, shadowScale: CGFloat = 1) -> CGImage? {
         // Preserve color space, alpha, data and orientation when disabled.
         guard style.isEnabled else { return source }
         let layout = layout(for: NSSize(width: source.width, height: source.height), style: style)
@@ -65,7 +64,7 @@ enum ScreenshotBeautifier {
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         context.translateBy(x: 0, y: layout.size.height)
         context.scaleBy(x: 1, y: -1)
-        drawDecoration(in: context, layout: layout, style: style)
+        drawDecoration(in: context, layout: layout, style: style, shadowScale: shadowScale)
         context.saveGState()
         context.addPath(contentPath(layout: layout, style: style))
         context.clip()
@@ -95,7 +94,7 @@ enum ScreenshotBeautifier {
     }
 
     /// Draw before the source image, in an already top-left based CGContext.
-    static func drawDecoration(in context: CGContext, layout: Layout, style: ScreenshotStyle) {
+    static func drawDecoration(in context: CGContext, layout: Layout, style: ScreenshotStyle, shadowScale: CGFloat = 1) {
         guard style.isEnabled else { return }
         context.saveGState()
         defer { context.restoreGState() }
@@ -118,7 +117,9 @@ enum ScreenshotBeautifier {
                                            end: CGPoint(x: bounds.maxX, y: bounds.maxY), options: [])
             }
         }
-        guard style.shadow else { return }
+        // At zero padding there is no exterior canvas for a shadow. Drawing it
+        // into only the rounded corner cutouts would leave dirty corner pixels.
+        guard style.shadow, style.padding > 0 else { return }
         // Keep a transparent source transparent: only the shadow outside the
         // rounded image is painted, without adding an opaque backing plate.
         context.addRect(bounds)
@@ -126,7 +127,7 @@ enum ScreenshotBeautifier {
         context.clip(using: .evenOdd)
         // Core Graphics keeps shadow offsets in its default (bottom-up) space,
         // even though the source canvas uses a flipped coordinate system.
-        context.setShadow(offset: CGSize(width: 0, height: -shadowOffset), blur: shadowBlur,
+        context.setShadow(offset: CGSize(width: 0, height: -shadowOffset * shadowScale), blur: shadowBlur * shadowScale,
                           color: color(0, 0, 0, alpha: style.background == .midnight ? 0.42 : 0.23))
         context.setFillColor(color(0, 0, 0))
         context.addPath(contentPath(layout: layout, style: style))

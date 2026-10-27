@@ -1,7 +1,8 @@
 import AppKit
 
 final class HomeWindow: NSWindow {
-    init(onCapture: @escaping () -> Void, onOpen: @escaping () -> Void, onDemo: @escaping () -> Void, onPermissions: @escaping () -> Void) {
+    init(onCapture: @escaping () -> Void, onOpen: @escaping () -> Void, onDemo: @escaping () -> Void,
+         onPermissions: @escaping () -> Void, onSettings: @escaping () -> Void = {}) {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 520, height: 400),
                    styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
                    backing: .buffered, defer: false)
@@ -13,7 +14,7 @@ final class HomeWindow: NSWindow {
         isReleasedWhenClosed = false
         level = .normal
         tabbingMode = .disallowed
-        contentView = HomeContentView(onCapture: onCapture, onOpen: onOpen, onDemo: onDemo, onPermissions: onPermissions)
+        contentView = HomeContentView(onCapture: onCapture, onOpen: onOpen, onDemo: onDemo, onPermissions: onPermissions, onSettings: onSettings)
         center()
     }
 
@@ -27,9 +28,12 @@ private final class HomeContentView: NSView {
     private let permissionIcon = NSImageView()
     private let permissionLabel = NSTextField(labelWithString: "")
     private let permissionAction: () -> Void
+    private let settingsAction: () -> Void
 
-    init(onCapture: @escaping () -> Void, onOpen: @escaping () -> Void, onDemo: @escaping () -> Void, onPermissions: @escaping () -> Void) {
+    init(onCapture: @escaping () -> Void, onOpen: @escaping () -> Void, onDemo: @escaping () -> Void,
+         onPermissions: @escaping () -> Void, onSettings: @escaping () -> Void) {
         permissionAction = onPermissions
+        settingsAction = onSettings
         super.init(frame: .zero)
 
         let logo = NSImageView()
@@ -73,16 +77,21 @@ private final class HomeContentView: NSView {
         let local = NSTextField(labelWithString: "内容仅在本机处理")
         local.font = .systemFont(ofSize: 11)
         local.textColor = .secondaryLabelColor
-        let settings = NSButton(image: NSImage(systemSymbolName: "gearshape", accessibilityDescription: "管理屏幕权限")!, target: self, action: #selector(managePermission))
+        let permissions = NSButton(image: NSImage(systemSymbolName: "lock.shield", accessibilityDescription: "管理屏幕权限")!, target: self, action: #selector(managePermission))
+        permissions.isBordered = false
+        permissions.contentTintColor = .secondaryLabelColor
+        permissions.toolTip = "管理屏幕录制权限"
+        permissions.setAccessibilityLabel("管理屏幕录制权限")
+        let settings = NSButton(image: NSImage(systemSymbolName: "gearshape", accessibilityDescription: "设置")!, target: self, action: #selector(openSettings))
         settings.isBordered = false
         settings.contentTintColor = .secondaryLabelColor
-        settings.toolTip = "管理屏幕录制权限"
-        settings.setAccessibilityLabel("管理屏幕录制权限")
+        settings.toolTip = "设置 · ⌘,"
+        settings.setAccessibilityLabel("打开设置")
         settings.translatesAutoresizingMaskIntoConstraints = false
         settings.widthAnchor.constraint(equalToConstant: 22).isActive = true
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let footer = NSStackView(views: [status, spacer, local, settings])
+        let footer = NSStackView(views: [status, spacer, local, permissions, settings])
         footer.spacing = 10
         footer.alignment = .centerY
 
@@ -124,6 +133,7 @@ private final class HomeContentView: NSView {
         permissionLabel.stringValue = ready ? "截图权限已就绪" : "需要屏幕录制权限"
     }
     @objc private func managePermission() { permissionAction() }
+    @objc private func openSettings() { settingsAction() }
 }
 
 /// A large native button with a deliberate two-line hierarchy and full keyboard/AX behavior.

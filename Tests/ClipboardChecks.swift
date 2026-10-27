@@ -10,6 +10,10 @@ import AppKit
     @MainActor static func main() throws {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
+        let suite = "XShot.ClipboardChecks.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults)
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
         let source = fixture()
@@ -23,7 +27,7 @@ import AppKit
         precondition(descendants(panel.view).compactMap { $0 as? NSSegmentedControl }.first!.selectedSegment == 1,
                      "The default controls must select light shadow")
 
-        let editor = EditorWindowController(image: image, copyAfterCapture: true, pasteboard: pasteboard, onPin: { _ in })
+        let editor = EditorWindowController(image: image, copyAfterCapture: true, pasteboard: pasteboard, settings: settings, onPin: { _ in })
         let original = editor.window!
         let hidden = HiddenWindow(contentRect: NSRect(x: 0, y: 0, width: 1080, height: 700),
                                   styleMask: [.titled, .resizable], backing: .buffered, defer: false)
@@ -53,7 +57,7 @@ import AppKit
         editor.showWindow(nil)
         precondition(pasteboard.changeCount == changeCount && pasteboard.string(forType: .string) == "keep-existing-clipboard",
                      "Reopening a capture must not copy it again")
-        let imported = EditorWindowController(image: image, pasteboard: pasteboard, onPin: { _ in })
+        let imported = EditorWindowController(image: image, pasteboard: pasteboard, settings: settings, onPin: { _ in })
         let importedWindow = HiddenWindow(contentRect: hidden.frame, styleMask: .titled, backing: .buffered, defer: false)
         importedWindow.isReleasedWhenClosed = false
         importedWindow.contentView = imported.window!.contentView

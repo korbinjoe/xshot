@@ -32,6 +32,7 @@ final class StyledCanvasDocument: NSView {
         decorationImage = value.isEnabled ? ScreenshotBeautifier.renderDecoration(for: canvas.pixelSize, style: value) : nil
         setFrameSize(decorationLayout.size)
         canvas.frame = decorationLayout.contentRect
+        canvas.setBoundsSize(canvas.pixelSize)
         canvas.layer?.cornerRadius = value.isEnabled
             ? min(max(0, value.cornerRadius), min(canvas.pixelSize.width, canvas.pixelSize.height) / 2) : 0
         borderOverlay.frame = bounds

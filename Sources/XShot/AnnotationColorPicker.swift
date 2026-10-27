@@ -80,7 +80,7 @@ final class AnnotationColorPicker: NSButton {
             swatch.tag = index
             swatch.target = self
             swatch.action = #selector(selectSwatch(_:))
-            swatch.toolTip = entry.0
+            swatch.toolTip = "\(entry.0) · \(index + 1)"
             swatch.setAccessibilityLabel(entry.0)
             row.addArrangedSubview(swatch)
             swatches.append(swatch)
@@ -135,7 +135,7 @@ final class AnnotationColorPicker: NSButton {
         setColor(sender.color)
     }
 
-    private func setColor(_ newColor: NSColor) {
+    func setColor(_ newColor: NSColor) {
         color = newColor.withAlphaComponent(1)
         customWell.color = color
         updatePresentation()
@@ -145,7 +145,7 @@ final class AnnotationColorPicker: NSButton {
     private func updatePresentation() {
         let selectedIndex = palette.firstIndex { sameColor($0.1, color) }
         let description = selectedIndex.map { palette[$0].0 } ?? hexDescription(color)
-        toolTip = "标注颜色：\(description)"
+        toolTip = "标注颜色：\(description) · 1–8 切换颜色"
         setAccessibilityLabel("标注颜色")
         setAccessibilityValue(description)
         for (index, swatch) in swatches.enumerated() {

@@ -3,7 +3,7 @@ import Carbon
 import UniformTypeIdentifiers
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, SettingsPresenting {
     private var statusItem: NSStatusItem!
     private var homeWindow: NSWindow!
     private var shortcut: EventHotKeyRef?
@@ -16,11 +16,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var exportsPendingTermination: [DemoStudioWindowController] = []
     private var editors: [EditorWindowController] = []
     private var pins: [PinWindowController] = []
+    private var settingsController: SettingsWindowController?
     private let workspaceWindows = WorkspaceWindowCoordinator()
-    private lazy var capture = CaptureCoordinator { [weak self] image in self?.openEditor(image, copyAfterCapture: true) }
+    private lazy var capture = CaptureCoordinator { [weak self] image, canvas in
+        self?.openEditor(image, annotationCanvas: canvas, copyAfterCapture: true)
+    }
 
     private var managedWorkspaceWindows: [NSWindow] {
-        [homeWindow].compactMap { $0 } + editors.compactMap(\.window) + demoStudios.compactMap(\.window) + pins.compactMap(\.window)
+        [homeWindow, settingsController?.window].compactMap { $0 } + editors.compactMap(\.window) + demoStudios.compactMap(\.window) + pins.compactMap(\.window)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -64,13 +67,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    private func setupMenu() {
+    func setupMenu() {
         let mainMenu = NSMenu()
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "关于 XShot", action: #selector(showAbout), keyEquivalent: "")
         appMenu.addItem(.separator())
+        let settings = appMenu.addItem(withTitle: "设置…", action: #selector(showSettings(_:)), keyEquivalent: ",")
+        settings.target = self
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "显示 XShot", action: #selector(showHome(_:)), keyEquivalent: "0")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "隐藏 XShot", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = appMenu.addItem(withTitle: "隐藏其他", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(withTitle: "全部显示", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "退出 XShot", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
@@ -87,6 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openDemo.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(withTitle: "打开图片…", action: #selector(openImage(_:)), keyEquivalent: "o")
         fileMenu.addItem(withTitle: "保存 PNG…", action: #selector(AnnotationCanvas.saveDocument(_:)), keyEquivalent: "s")
+        fileMenu.addItem(.separator())
+        // Let AppKit resolve the focused window, including sheets and text fields.
+        fileMenu.addItem(withTitle: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         fileItem.submenu = fileMenu
         mainMenu.addItem(fileItem)
         let editItem = NSMenuItem()
@@ -101,7 +115,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
+        let windowItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "窗口")
+        windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        let fullScreen = windowMenu.addItem(withTitle: "进入全屏幕", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
+        fullScreen.keyEquivalentModifierMask = [.command, .control]
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(withTitle: "前置全部窗口", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        windowItem.submenu = windowMenu
+        mainMenu.addItem(windowItem)
         NSApp.mainMenu = mainMenu
+        NSApp.windowsMenu = windowMenu
     }
 
     private func setupStatusItem() {
@@ -119,6 +144,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(withTitle: "显示主窗口", action: #selector(showHome(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "隐藏／显示全部贴图", action: #selector(togglePins(_:)), keyEquivalent: "")
+        let settings = menu.addItem(withTitle: "设置…", action: #selector(showSettings(_:)), keyEquivalent: "")
+        settings.target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "退出 XShot", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         statusItem.menu = menu
@@ -129,7 +156,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onCapture: { [weak self] in self?.startCapture(nil) },
             onOpen: { [weak self] in self?.openImage(nil) },
             onDemo: { [weak self] in self?.showDemo(nil) },
-            onPermissions: { [weak self] in self?.openPermissions(nil) }
+            onPermissions: { [weak self] in self?.openPermissions(nil) },
+            onSettings: { [weak self] in self?.showSettings(nil) }
         )
     }
 
@@ -161,7 +189,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func startCapture(_ sender: Any?) {
         guard demoRecorder?.isRecordingFlowActive != true else { return }
-        capture.start { [weak self] in self?.homeWindow.orderOut(nil) }
+        capture.start { [weak self] in
+            self?.homeWindow.orderOut(nil)
+            self?.settingsController?.window?.orderOut(nil)
+        }
+    }
+
+    @objc func showSettings(_ sender: Any?) {
+        if settingsController == nil {
+            let controller = SettingsWindowController()
+            controller.onClose = { [weak self] in self?.capture.restoreAfterSettings() }
+            settingsController = controller
+        }
+        capture.hideForSettings()
+        NSApp.activate(ignoringOtherApps: true)
+        settingsController?.showWindow(sender)
+        settingsController?.window?.deminiaturize(nil)
+        settingsController?.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc func showDemo(_ sender: Any?) {
@@ -291,8 +335,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard panel.runModal() == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
         openEditor(image)
     }
-    private func openEditor(_ image: NSImage, copyAfterCapture: Bool = false) {
-        let editor = EditorWindowController(image: image, copyAfterCapture: copyAfterCapture) { [weak self] image in
+    private func openEditor(_ image: NSImage, annotationCanvas: AnnotationCanvas? = nil, copyAfterCapture: Bool = false) {
+        let editor = EditorWindowController(image: image, annotationCanvas: annotationCanvas, copyAfterCapture: copyAfterCapture) { [weak self] image in
             guard let self else { return }
             let pin = PinWindowController(image: image)
             self.pins.append(pin)
