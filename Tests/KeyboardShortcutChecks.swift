@@ -70,9 +70,9 @@ import AppKit
             window.firstResponder?.keyDown(with: event)
         }
         let toolControl = window.toolbar!.items.compactMap { $0.view as? NSSegmentedControl }.first!
-        for (tool, code) in zip(AnnotationCanvas.Tool.allCases, [UInt16(15), 0, 35, 17, 46]) {
+        for (tool, code) in zip(AnnotationCanvas.Tool.drawingTools, [UInt16(15), 0, 35, 17, 46]) {
             deliver(tool.shortcut.lowercased(), code: code)
-            precondition(canvas.tool == tool && toolControl.selectedSegment == tool.rawValue,
+            precondition(canvas.tool == tool && toolControl.selectedSegment == AnnotationCanvas.Tool.toolbarTools.firstIndex(of: tool),
                          "Tool shortcuts must keep the editor toolbar in sync")
         }
         let colors = AppSettings.InkColor.allCases
@@ -83,11 +83,15 @@ import AppKit
             precondition(zip(actual.cgColor.components!, expected.cgColor.components!).allSatisfy { abs($0 - $1) < 0.001 },
                          "Color key \(index + 1) must select its palette color")
         }
+        let brushBefore = canvas.mosaicBrushSize
+        deliver("]", code: 30)
+        precondition(canvas.mosaicBrushSize > brushBefore && canvas.strokeWidth == 4)
+        deliver("p", code: 35)
         for _ in 0..<8 { deliver("[", code: 33) }
         precondition(canvas.strokeWidth == 2)
         for _ in 0..<8 { deliver("]", code: 30) }
         precondition(canvas.strokeWidth == 12, "Width shortcuts must clamp to supported choices")
-        let width = window.toolbar!.items.compactMap { $0.view as? NSPopUpButton }.first!
+        let width = window.toolbar!.items.flatMap { $0.view.map(descendants) ?? [] }.compactMap { $0 as? NSPopUpButton }.first { !($0 is AnnotationFontSizePicker) && !($0 is AnnotationBrushSizePicker) }!
         precondition(width.indexOfSelectedItem == 3)
         deliver("1", code: 18, modifiers: .command)
         let scroll = descendants(window.contentView!).compactMap { $0 as? NSScrollView }.first!
@@ -122,8 +126,7 @@ import AppKit
 
         canvas.tool = .text
         canvas.mouseDown(with: mouse(.leftMouseDown, NSPoint(x: 40, y: 100)))
-        let field = canvas.subviews.compactMap { $0 as? NSTextField }.first!
-        field.stringValue = "标注文字"
+        canvas.textEditor!.insertText("标注文字", replacementRange: NSRange(location: NSNotFound, length: 0))
         let text = window.firstResponder as! NSTextView
         let colorBeforeTyping = canvas.inkColor
         text.setSelectedRange(NSRange(location: (text.string as NSString).length, length: 0))
@@ -139,6 +142,20 @@ import AppKit
         precondition(app.target(forAction: #selector(NSText.copy(_:))) as? NSTextView === text,
                      "Text editing must keep ownership of Command-C")
         precondition(copyCount == 1, "Text commands must not copy the whole screenshot")
+        canvas.textFontSize = 32
+        canvas.inkColor = .systemBlue
+        let beforeTextUndo = text.string
+        let annotationHistoryBefore = canvas.canUndo
+        press("z", code: 6, menu: menu, window: window)
+        precondition(canvas.textEditor === text && window.firstResponder === text && text.string != beforeTextUndo,
+                     "The native Edit menu must undo typing inside the live text view, preserving the editing session")
+        precondition(canvas.canUndo == annotationHistoryBefore)
+        press("z", code: 6, modifiers: [.command, .shift], menu: menu, window: window)
+        precondition(canvas.textEditor === text && text.string == beforeTextUndo,
+                     "Native Command-Shift-Z must redo text rather than the canvas annotation")
+
+        precondition(text.font?.pointSize == 32 && text.textColor?.isEqual(NSColor.systemBlue) == true,
+                     "Text undo and redo after style changes must preserve the live size/color used by export")
 
         var closed: [ObjectIdentifier] = []
         let observer = NotificationCenter.default.addObserver(

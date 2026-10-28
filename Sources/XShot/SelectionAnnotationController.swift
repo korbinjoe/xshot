@@ -16,6 +16,8 @@ final class SelectionAnnotationController: NSObject {
     private let tools = NSSegmentedControl()
     private let palette = NSSegmentedControl()
     private let widths = NSPopUpButton()
+    private let fontSizes = AnnotationFontSizePicker()
+    private let brushSizes = AnnotationBrushSizePicker()
     private let undo = NSButton()
     private let redo = NSButton()
     private let clear = NSButton()
@@ -34,7 +36,7 @@ final class SelectionAnnotationController: NSObject {
     private var revision = UUID()
     private var selectionFrame = NSRect.zero
     private var sourceFrame = NSRect.zero
-    var isDrawing: Bool { canvas != nil && tools.selectedSegment > 0 }
+    var isDrawing: Bool { canvas != nil && (tools.selectedSegment > 0 || canvas?.hasAnnotations == true) }
 
     init(settings: AppSettings = .shared) {
         self.settings = settings
@@ -55,10 +57,10 @@ final class SelectionAnnotationController: NSObject {
         tools.segmentCount = 6
         tools.trackingMode = .selectOne
         let symbols = ["cursorarrow", "rectangle", "arrow.up.right", "pencil.tip", "textformat", "square.grid.3x3.fill"]
-        let titles = ["调整选区"] + AnnotationCanvas.Tool.allCases.map(\.title)
+        let titles = ["选择标注 / 调整截图范围"] + AnnotationCanvas.Tool.drawingTools.map(\.title)
         for index in symbols.indices {
             tools.setImage(NSImage(systemSymbolName: symbols[index], accessibilityDescription: titles[index]), forSegment: index)
-            let key = index == 0 ? "V" : AnnotationCanvas.Tool.allCases[index - 1].shortcut
+            let key = index == 0 ? "V" : AnnotationCanvas.Tool.drawingTools[index - 1].shortcut
             tools.setToolTip("\(titles[index]) · \(key)", forSegment: index)
             tools.setWidth(26, forSegment: index)
         }
@@ -84,6 +86,16 @@ final class SelectionAnnotationController: NSObject {
         widths.target = self; widths.action = #selector(changeWidth)
         widths.setAccessibilityLabel("框选标注线宽")
         widths.toolTip = "标注线宽 · [ 减小 / ] 增大"
+        brushSizes.controlSize = .small
+        brushSizes.onSizeChange = { [weak self] size in
+            self?.canvas?.mosaicBrushSize = size
+            self?.focusCanvas()
+        }
+        fontSizes.controlSize = .small
+        fontSizes.onSizeChange = { [weak self] size in
+            self?.canvas?.textFontSize = size
+            self?.focusCanvas()
+        }
         configure(undo, "", "arrow.uturn.backward", "撤销标注", #selector(undoMark))
         configure(redo, "", "arrow.uturn.forward", "重做标注", #selector(redoMark))
         configure(clear, "", "trash", "清空标注", #selector(clearMarks))
@@ -111,7 +123,7 @@ final class SelectionAnnotationController: NSObject {
         status.setContentHuggingPriority(.defaultLow, for: .horizontal)
         status.setAccessibilityLabel("框选标注状态")
 
-        for view in [tools, palette, widths, undo, redo, clear] { toolRow.addArrangedSubview(view) }
+        for view in [tools, palette, widths, fontSizes, brushSizes, undo, redo, clear] { toolRow.addArrangedSubview(view) }
         toolRow.spacing = 5
         toolRow.alignment = .centerY
         toolScroll.drawsBackground = false
@@ -197,12 +209,15 @@ final class SelectionAnnotationController: NSObject {
         canvas.setBoundsSize(canvas.pixelSize)
         canvas.inkColor = colors[max(0, palette.selectedSegment)]
         canvas.strokeWidth = [CGFloat(2), 4, 8, 12][max(0, widths.indexOfSelectedItem)]
+        canvas.tool = .selection
+        canvas.refreshAutomaticSizes()
         canvas.onChange = { [weak self] in self?.updateControls() }
         canvas.onCopy = { [weak self] in self?.copyImage() }
         canvas.onSave = { [weak self] in self?.saveImage() }
         canvas.onConfirm = { [weak self] in self?.copyImage() }
         canvas.onCancel = { [weak self] in self?.onCancel?() }
         canvas.onShortcut = { [weak self] in self?.handleShortcut($0) ?? false }
+        canvas.onSelectionChange = { [weak self] in self?.updateControls() }
         surface.isHidden = false
         status.stringValue = "选择工具直接标注"
         updateControls()
@@ -234,7 +249,21 @@ final class SelectionAnnotationController: NSObject {
         undo.isEnabled = canvas?.canUndo == true
         redo.isEnabled = canvas?.canRedo == true
         clear.isEnabled = canvas?.hasAnnotations == true
-        for control in [tools, palette, widths, copy, save, edit] { control.isEnabled = canvas != nil }
+        for control in [tools, palette, widths, fontSizes, brushSizes, copy, save, edit] { control.isEnabled = canvas != nil }
+        let kind = canvas?.propertyTool
+        widths.isHidden = kind == .text || kind == .mosaic
+        fontSizes.isHidden = kind != .text
+        brushSizes.isHidden = kind != .mosaic
+        palette.isEnabled = canvas != nil && kind != nil && kind != .mosaic
+        widths.isEnabled = kind != nil
+        surface.acceptsDrawing = isDrawing
+        if let canvas {
+            fontSizes.select(size: canvas.textFontSize)
+            brushSizes.select(size: canvas.mosaicBrushSize)
+            widths.selectItem(at: AppSettings.lineWidths.firstIndex(of: canvas.strokeWidth) ?? 1)
+            if let index = colors.firstIndex(where: { $0.isEqual(canvas.inkColor) }) { palette.selectedSegment = index }
+            else { palette.selectedSegment = -1 }
+        }
         surface.edgeInset = canvas?.hasAnnotations == true ? 0 : 8
         onChange?()
     }
@@ -242,24 +271,22 @@ final class SelectionAnnotationController: NSObject {
     @objc private func selectTool() {
         guard let canvas else { return }
         canvas.finishTextEditing()
-        if tools.selectedSegment == 0, !beginAdjustingSelection() {
-            tools.selectedSegment = canvas.tool.rawValue + 1
-            surface.acceptsDrawing = true
-            canvas.window?.makeFirstResponder(canvas)
-            return
-        }
-        surface.acceptsDrawing = tools.selectedSegment > 0
-        if let tool = AnnotationCanvas.Tool(rawValue: tools.selectedSegment - 1) {
+        if tools.selectedSegment == 0 {
+            canvas.tool = .selection
+            status.stringValue = canvas.hasAnnotations ? "单击选择标注 · 拖动移动 · 手柄调整大小" : "拖动内部移动截图 · 边角调整范围"
+        } else if let tool = AnnotationCanvas.Tool(rawValue: tools.selectedSegment - 1) {
             canvas.tool = tool
-            status.stringValue = tool == .text ? "单击输入文字 · 回车完成" : "拖动绘制\(tool.title)"
-            canvas.window?.makeFirstResponder(canvas)
-        } else {
-            status.stringValue = "拖动内部移动 · 边角调整"
-            surface.window?.makeFirstResponder(surface.superview)
+            switch tool {
+            case .text: status.stringValue = "回车换行 · ⌘↩ 完成 · 字号随画面适配"
+            case .mosaic: status.stringValue = "按住涂抹马赛克 · [ / ] 调整笔刷大小"
+            default: status.stringValue = "拖动绘制\(tool.title)"
+            }
         }
+        if isDrawing { canvas.window?.makeFirstResponder(canvas) }
+        else { surface.window?.makeFirstResponder(surface.superview) }
+        updateControls()
     }
     @objc private func changeColor() {
-        canvas?.finishTextEditing()
         canvas?.inkColor = colors[max(0, palette.selectedSegment)]
         focusCanvas()
     }
@@ -268,7 +295,7 @@ final class SelectionAnnotationController: NSObject {
         focusCanvas()
     }
     private func focusCanvas() {
-        if isDrawing { canvas?.window?.makeFirstResponder(canvas) }
+        if isDrawing { canvas?.window?.makeFirstResponder(canvas?.textEditor ?? canvas) }
         else { surface.window?.makeFirstResponder(surface.superview) }
     }
 
@@ -277,7 +304,7 @@ final class SelectionAnnotationController: NSObject {
         guard canvas != nil else { return false }
         switch shortcut {
         case .tool(let tool):
-            tools.selectedSegment = tool.rawValue + 1
+            tools.selectedSegment = tool == .selection ? 0 : tool.rawValue + 1
             selectTool()
         case .selection:
             tools.selectedSegment = 0
@@ -287,6 +314,19 @@ final class SelectionAnnotationController: NSObject {
             palette.selectedSegment = index
             changeColor()
         case .width(let delta):
+            if let canvas, canvas.propertyTool == .mosaic {
+                let sizes = AnnotationBrushSizePicker.sizes
+                let index = sizes.firstIndex(where: { $0 >= canvas.mosaicBrushSize }) ?? sizes.count - 1
+                canvas.mosaicBrushSize = sizes[max(0, min(sizes.count - 1, index + delta))]
+                return true
+            }
+            if let canvas, canvas.propertyTool == .text, isDrawing {
+                let sizes = AnnotationFontSizePicker.sizes
+                let index = sizes.firstIndex(where: { $0 >= canvas.textFontSize }) ?? sizes.count - 1
+                canvas.textFontSize = sizes[max(0, min(sizes.count - 1, index + delta))]
+                updateControls()
+                return true
+            }
             widths.selectItem(at: max(0, min(AppSettings.lineWidths.count - 1, widths.indexOfSelectedItem + delta)))
             changeWidth()
         case .clear: clearMarks()

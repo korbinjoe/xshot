@@ -135,11 +135,11 @@ final class AnnotationColorPicker: NSButton {
         setColor(sender.color)
     }
 
-    func setColor(_ newColor: NSColor) {
+    func setColor(_ newColor: NSColor, notify: Bool = true) {
         color = newColor.withAlphaComponent(1)
         customWell.color = color
         updatePresentation()
-        onColorChange?(color)
+        if notify { onColorChange?(color) }
     }
 
     private func updatePresentation() {

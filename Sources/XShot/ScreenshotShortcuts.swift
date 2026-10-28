@@ -39,7 +39,7 @@ enum ScreenshotShortcut: Equatable {
             if event.characters == "?" { return .help }
         }
         guard flags.isEmpty else { return nil }
-        if let tool = AnnotationCanvas.Tool.allCases.first(where: { $0.shortcut.lowercased() == key }) {
+        if let tool = AnnotationCanvas.Tool.drawingTools.first(where: { $0.shortcut.lowercased() == key }) {
             return .tool(tool)
         }
         switch key {
@@ -71,18 +71,21 @@ final class ScreenshotShortcutHelp: NSObject {
         button.heightAnchor.constraint(equalToConstant: 24).isActive = true
 
         var rows = [("矩形 / 箭头 / 画笔 / 文字 / 马赛克", "R / A / P / T / M"),
-                    ("颜色：红橙黄绿蓝紫黑白", "1–8"), ("减小 / 增大线宽", "[ / ]"),
+                    ("颜色：红橙黄绿蓝紫黑白", "1–8"), ("线宽 / 字号 / 马赛克笔刷大小", "[ / ]"),
                     ("撤销 / 重做", "⌘Z / ⇧⌘Z"), ("清空标注（可撤销）", "⇧⌘⌫"),
                     ("复制 / 保存 PNG", "⌘C / ⌘S")]
         if context == .selection {
-            rows += [("调整选区", "V"), ("移动选区 1 / 10 像素", "方向键 / ⇧方向键"),
+            rows += [("选择标注 / 调整截图范围", "V"), ("移动标注或截图 1 / 10 像素", "方向键 / ⇧方向键"),
                      ("选择整个屏幕", "⌘A"), ("打开编辑器", "⇧⌘E"),
                      ("复制并完成 / 取消截图", "Enter / Esc")]
         } else {
             rows += [("打开美化 / 贴图", "⇧⌘B / ⇧⌘P"), ("放大 / 缩小", "⌘+ / ⌘−"),
                      ("原始像素 / 适合窗口", "⌘1 / ⌘9")]
         }
-        rows += [("设置 / 关闭窗口", "⌘, / ⌘W"), ("查看快捷键", "?")]
+        rows += [("文字换行 / 完成编辑", "Enter / ⌘Enter"),
+                 ("选择标注 / 删除所选标注", "V / Delete"),
+                 ("移动 / 缩放 / 编辑文字", "拖动 / 手柄 / 双击"),
+                 ("设置 / 关闭窗口", "⌘, / ⌘W"), ("查看快捷键", "?")]
         let title = NSTextField(labelWithString: "截图快捷键")
         title.font = .systemFont(ofSize: 15, weight: .semibold)
         let grid = NSGridView(views: rows.map { label, keys in
@@ -96,8 +99,8 @@ final class ScreenshotShortcutHelp: NSObject {
         grid.columnSpacing = 24
         grid.rowSpacing = 9
         let note = NSTextField(wrappingLabelWithString: context == .selection
-            ? "标注后选区固定，清空后可再次调整。文字输入时保留正常打字和文本快捷键。"
-            : "先点击画布即可使用工具快捷键。文字输入时保留正常打字和文本快捷键。")
+            ? "V 选择任意标注，拖动移动或用手柄缩放；马赛克按住涂抹。标注后截图范围固定，清空后可调整。"
+            : "V 选择任意标注，拖动移动或用手柄缩放；马赛克按住涂抹。输入文字时保留标准文本快捷键。")
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
         let stack = NSStackView(views: [title, grid, note])
@@ -118,7 +121,7 @@ final class ScreenshotShortcutHelp: NSObject {
         let controller = NSViewController()
         controller.view = content
         popover.contentViewController = controller
-        popover.contentSize = NSSize(width: 500, height: context == .selection ? 460 : 410)
+        popover.contentSize = NSSize(width: 500, height: context == .selection ? 550 : 500)
         popover.behavior = .transient
     }
 

@@ -12,6 +12,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     private let tools = NSSegmentedControl()
     private let shortcutHelp = ScreenshotShortcutHelp(context: .editor)
     private let widthPicker = NSPopUpButton()
+    private let fontSizePicker = AnnotationFontSizePicker()
+    private let brushSizePicker = AnnotationBrushSizePicker()
     private let undoButton = NSButton()
     private let redoButton = NSButton()
     private let clearButton = NSButton()
@@ -81,6 +83,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         canvas.onCopy = { [weak self] in self?.copyImage() }
         canvas.onSave = { [weak self] in self?.saveImage() }
         canvas.onShortcut = { [weak self] in self?.handleShortcut($0) ?? false }
+        canvas.onSelectionChange = { [weak self] in self?.updateTextControls() }
+        updateTextControls()
         magnificationObserver = NotificationCenter.default.addObserver(
             forName: NSScrollView.didEndLiveMagnifyNotification, object: scrollView, queue: .main
         ) { [weak self] _ in
@@ -209,23 +213,22 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     private func buildToolbar() {
-        let symbols = ["rectangle", "arrow.up.right", "pencil.tip", "textformat", "square.grid.3x3.fill"]
+        let symbols = ["cursorarrow", "rectangle", "arrow.up.right", "pencil.tip", "textformat", "square.grid.3x3.fill"]
         tools.segmentCount = symbols.count
         tools.trackingMode = .selectOne
         tools.target = self
         tools.action = #selector(selectTool(_:))
-        tools.selectedSegment = canvas.tool.rawValue
+        tools.selectedSegment = AnnotationCanvas.Tool.toolbarTools.firstIndex(of: canvas.tool) ?? 0
         tools.segmentStyle = .automatic
         tools.setAccessibilityLabel("标注工具")
-        for (index, tool) in AnnotationCanvas.Tool.allCases.enumerated() {
+        for (index, tool) in AnnotationCanvas.Tool.toolbarTools.enumerated() {
             tools.setWidth(30, forSegment: index)
             tools.setImage(symbolImage(symbols[index], description: tool.title, size: 14), forSegment: index)
             tools.setToolTip("\(tool.title) · \(tool.shortcut)", forSegment: index)
         }
-        colorPicker.onBeginSelection = { [weak self] in self?.canvas.finishTextEditing() }
         colorPicker.onColorChange = { [weak self] color in
             self?.canvas.inkColor = color
-            self?.window?.makeFirstResponder(self?.canvas)
+            self?.focusAnnotation()
         }
         widthPicker.addItems(withTitles: ["2 px", "4 px", "8 px", "12 px"])
         widthPicker.selectItem(at: AppSettings.lineWidths.firstIndex(of: canvas.strokeWidth) ?? 1)
@@ -238,6 +241,18 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         widthPicker.widthAnchor.constraint(equalToConstant: 62).isActive = true
         widthPicker.toolTip = "标注线宽 · [ 减小 / ] 增大（图像像素）"
         widthPicker.setAccessibilityLabel("标注线宽")
+        fontSizePicker.isBordered = false
+        fontSizePicker.onSizeChange = { [weak self] size in
+            self?.canvas.textFontSize = size
+            self?.focusAnnotation()
+        }
+        brushSizePicker.isBordered = false
+        brushSizePicker.onSizeChange = { [weak self] size in
+            self?.canvas.mosaicBrushSize = size
+            self?.focusAnnotation()
+        }
+        let sizeControls = NSStackView(views: [widthPicker, fontSizePicker, brushSizePicker])
+        sizeControls.spacing = 0
         configureIconButton(undoButton, symbol: "arrow.uturn.backward", label: "撤销", action: #selector(undoMark))
         configureIconButton(redoButton, symbol: "arrow.uturn.forward", label: "重做", action: #selector(redoMark))
         configureIconButton(clearButton, symbol: "trash", label: "清空标注", action: #selector(clearMarks))
@@ -273,7 +288,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         copy.widthAnchor.constraint(equalToConstant: 76).isActive = true
         let views: [(String, String, NSView)] = [
             ("tools", "标注工具", tools), ("color", "标注颜色", colorPicker),
-            ("width", "标注线宽", widthPicker), ("history", "编辑历史", history),
+            ("width", "线宽或字号", sizeControls), ("history", "编辑历史", history),
             ("beauty", "截图美化", beautyButton), ("settings", "设置", settings), ("pin", "贴图", pin),
             ("save", "保存 PNG", save), ("copy", "复制截图", copy)
         ]
@@ -343,15 +358,37 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     @objc private func selectTool(_ sender: NSSegmentedControl) {
-        guard let tool = AnnotationCanvas.Tool(rawValue: sender.selectedSegment) else { return }
+        guard AnnotationCanvas.Tool.toolbarTools.indices.contains(sender.selectedSegment) else { return }
+        let tool = AnnotationCanvas.Tool.toolbarTools[sender.selectedSegment]
+        canvas.finishTextEditing()
         canvas.tool = tool
-        statusLabel.stringValue = tool == .text ? "单击输入文字 · 回车完成" : "拖动绘制\(tool.title) · ? 快捷键"
+        updateTextControls()
+        switch tool {
+        case .selection: statusLabel.stringValue = "单击选择标注 · 拖动移动 · 手柄调整大小 · Delete 删除"
+        case .text: statusLabel.stringValue = "回车换行 · ⌘↩ 完成 · 双击编辑 · 字号随画面自动适配"
+        case .mosaic: statusLabel.stringValue = "按住涂抹马赛克 · 单击局部遮盖 · [ / ] 调整笔刷"
+        default: statusLabel.stringValue = "拖动绘制\(tool.title) · ? 快捷键"
+        }
         window?.makeFirstResponder(canvas)
     }
 
     @objc private func changeWidth(_ sender: NSPopUpButton) {
         canvas.strokeWidth = [CGFloat(2), 4, 8, 12][max(0, sender.indexOfSelectedItem)]
         window?.makeFirstResponder(canvas)
+    }
+    private func focusAnnotation() { window?.makeFirstResponder(canvas.textEditor ?? canvas) }
+
+    private func updateTextControls() {
+        let kind = canvas.propertyTool
+        widthPicker.isHidden = kind == .text || kind == .mosaic
+        widthPicker.isEnabled = kind != nil
+        fontSizePicker.isHidden = kind != .text
+        brushSizePicker.isHidden = kind != .mosaic
+        colorPicker.isEnabled = kind != nil && kind != .mosaic
+        widthPicker.selectItem(at: AppSettings.lineWidths.firstIndex(of: canvas.strokeWidth) ?? 1)
+        fontSizePicker.select(size: canvas.textFontSize)
+        brushSizePicker.select(size: canvas.mosaicBrushSize)
+        colorPicker.setColor(canvas.inkColor, notify: false)
     }
     @objc private func undoMark() { canvas.undoAnnotation(); window?.makeFirstResponder(canvas) }
     @objc private func redoMark() { canvas.redoAnnotation(); window?.makeFirstResponder(canvas) }
@@ -360,13 +397,29 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     private func handleShortcut(_ shortcut: ScreenshotShortcut) -> Bool {
         switch shortcut {
+        case .selection:
+            tools.selectedSegment = 0
+            selectTool(tools)
         case .tool(let tool):
-            tools.selectedSegment = tool.rawValue
+            tools.selectedSegment = AnnotationCanvas.Tool.toolbarTools.firstIndex(of: tool) ?? 0
             selectTool(tools)
         case .color(let index):
             guard AppSettings.InkColor.allCases.indices.contains(index) else { return false }
             colorPicker.setColor(AppSettings.InkColor.allCases[index].color)
         case .width(let delta):
+            if canvas.propertyTool == .mosaic {
+                let sizes = AnnotationBrushSizePicker.sizes
+                let index = sizes.firstIndex(where: { $0 >= canvas.mosaicBrushSize }) ?? sizes.count - 1
+                canvas.mosaicBrushSize = sizes[max(0, min(sizes.count - 1, index + delta))]
+                return true
+            }
+            if canvas.propertyTool == .text {
+                let sizes = AnnotationFontSizePicker.sizes
+                let index = sizes.firstIndex(where: { $0 >= canvas.textFontSize }) ?? sizes.count - 1
+                canvas.textFontSize = sizes[max(0, min(sizes.count - 1, index + delta))]
+                updateTextControls()
+                return true
+            }
             widthPicker.selectItem(at: max(0, min(AppSettings.lineWidths.count - 1, widthPicker.indexOfSelectedItem + delta)))
             changeWidth(widthPicker)
         case .clear: clearMarks()
@@ -440,6 +493,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         updateZoomLabel()
     }
     private func updateZoomLabel() {
+        canvas.refreshAutomaticSizes()
         zoomLabel.stringValue = "\(Int((scrollView.magnification * 100).rounded()))%"
     }
 

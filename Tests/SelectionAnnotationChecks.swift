@@ -122,7 +122,7 @@ import AppKit
         let locked = shortcuts.view.selection
         key("v", code: 9, to: shortcuts.annotation.canvas)
         key("", code: 124, to: shortcuts.annotation.canvas)
-        precondition(shortcuts.annotation.isDrawing && shortcuts.view.selection == locked,
+        precondition(shortcuts.annotation.isDrawing && shortcuts.annotation.canvas?.tool == .selection && shortcuts.view.selection == locked,
                      "Keyboard selection changes must not discard marks")
         key("\u{7f}", code: 51, modifiers: [.command, .shift], to: shortcuts.annotation.canvas)
         precondition(shortcuts.annotation.canvas?.hasAnnotations == false)
@@ -168,10 +168,33 @@ import AppKit
         fixture.draw(NSPoint(x: 750, y: 350), NSPoint(x: 950, y: 540))
         fixture.choose(4)
         canvas.mouseDown(with: fixture.event(.leftMouseDown, NSPoint(x: 100, y: 480), in: canvas))
-        let field = canvas.subviews.compactMap { $0 as? NSTextField }.first!
-        field.stringValue = "直接标注，然后复制"
+        let inlineText = canvas.textEditor!
+        inlineText.insertText("直接标注，然后复制\n第二行可编辑", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let inlineSize = descendants(fixture.annotation.toolbar).compactMap { $0 as? AnnotationFontSizePicker }.first!
+        precondition(!inlineSize.isHidden)
+        inlineSize.select(size: 32)
+        precondition(inlineSize.sendAction(inlineSize.action, to: inlineSize.target))
+        precondition(inlineText.font?.pointSize == 32 && fixture.window.firstResponder === inlineText,
+                     "Inline font controls must resize live text while retaining the caret")
+        let inlinePalette = descendants(fixture.annotation.toolbar).compactMap { $0 as? NSSegmentedControl }
+            .first { $0.accessibilityLabel() == "框选标注颜色" }!
+        inlinePalette.selectedSegment = 4
+        precondition(inlinePalette.sendAction(inlinePalette.action, to: inlinePalette.target))
+        precondition(inlineText.textColor?.isEqual(NSColor.systemBlue) == true && fixture.window.firstResponder === inlineText)
         canvas.finishTextEditing()
         precondition(canvas.hasAnnotations)
+        let textBeforeResize = pixels(cg(canvas.renderedImage()!))
+        inlineSize.select(size: 24)
+        precondition(inlineSize.sendAction(inlineSize.action, to: inlineSize.target))
+        let textAfterResize = pixels(cg(canvas.renderedImage()!))
+        precondition(textAfterResize != textBeforeResize, "Inline font controls must also resize committed text")
+        canvas.undoAnnotation()
+        precondition(pixels(cg(canvas.renderedImage()!)) == textBeforeResize)
+        canvas.redoAnnotation()
+        precondition(pixels(cg(canvas.renderedImage()!)) == textAfterResize)
+        canvas.mouseDown(with: fixture.event(.leftMouseDown, NSPoint(x: 110, y: 490), in: canvas))
+        canvas.mouseUp(with: fixture.event(.leftMouseUp, NSPoint(x: 110, y: 490), in: canvas))
+        precondition(canvas.hasSelectedText && inlineSize.titleOfSelectedItem == "24 px")
 
         var copies = 0
         fixture.annotation.onCopy = { output in try ImageClipboard.write(output, to: pasteboard); copies += 1 }

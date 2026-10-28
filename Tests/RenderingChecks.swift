@@ -47,7 +47,7 @@ import AppKit
         precondition(bytes(canvas.renderedImage()!.cgImage(forProposedRect: nil, context: nil, hints: nil)!) == markedBytes)
         canvas.tool = .text
         canvas.mouseDown(with: event(NSPoint(x: 45, y: 125), type: .leftMouseDown))
-        if let field = canvas.subviews.first as? NSTextField { field.stringValue = "XShot 标注" }
+        canvas.textEditor!.insertText("XShot 标注", replacementRange: NSRange(location: NSNotFound, length: 0))
         canvas.finishTextEditing()
         canvas.tool = .mosaic
         canvas.mouseDown(with: event(NSPoint(x: 130, y: 60), type: .leftMouseDown))
