@@ -244,12 +244,18 @@ import AppKit
         }
         action(control(NSButton.self, "恢复默认设置", in: content))
         precondition(settings.values == AppSettings.Values() && presets.selectedSegment == 1 && copy.state == .on)
+        // An inherited dark appearance is not a light baseline. Exercise both
+        // appearances explicitly so this check also works when macOS uses Dark Mode.
+        let inheritedAppearance = window.appearance
+        window.appearance = NSAppearance(named: .aqua)
         try saveSnapshot("settings-default.png")
         let lightStage = stagePixels()
         window.appearance = NSAppearance(named: .darkAqua)
         precondition(stagePixels() != lightStage, "The transparency stage must follow the window appearance")
         try saveSnapshot("settings-dark.png")
-        window.appearance = nil
+        window.appearance = NSAppearance(named: .aqua)
+        precondition(stagePixels() == lightStage, "Returning to light appearance must restore the transparency stage")
+        window.appearance = inheritedAppearance
         var invalid = settings.values
         invalid.style.padding = .infinity
         invalid.style.cornerRadius = -100
