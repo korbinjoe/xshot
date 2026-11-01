@@ -1,5 +1,9 @@
 # XShot
 
+![XShot 标志（产品截图占位）](Resources/Logo/XShotMark.png)
+
+*上图为现有项目标志，暂作展示占位；需要用户提供产品截图/GIF。*
+
 独立实现的原生 macOS 截图与产品演示工具。0.2.0 包含窗口、区域与整屏截图、标注、复制与 PNG 保存、桌面贴图，以及自动缩放录屏和可点击步骤演示。
 
 ## 运行
@@ -100,14 +104,15 @@
 
 `python3 scripts/make-icons.py` 可重建图标资源；常规构建直接使用 `Resources/` 内的 PNG 与 ICNS，不需要图像生成服务。
 
+## 贡献与许可证
+
+欢迎提交 Issue 和 PR，开发环境与检查流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。本项目采用 [MIT 许可证](LICENSE)。
+
 ## 实现来源
 
-- 项目源代码由本项目独立编写，以公开可见的产品行为作为需求参考。
-- 未导入 iShot 源码、反编译代码、二进制、图标、图片、界面文件或文案。
-- 本次实现使用苹果公开系统框架：AppKit、ScreenCaptureKit、AVFoundation、Core Image、Core Graphics、WebKit、Carbon（全局快捷键）；没有外部代码依赖。
-- 截图功能参考：[iShot](https://www.better365.cn/ishot.html)；产品演示功能与交互参考：[Screen Studio](https://screen.studio/)、[Cap](https://cap.so/)、[Arcade](https://www.arcade.software/product/interactive-demo)、[Supademo](https://supademo.com/features/guided-demos)。未复用这些项目的代码或资产。
+- 项目源代码由本项目独立编写，使用苹果公开系统框架：AppKit、ScreenCaptureKit、AVFoundation、Core Image、Core Graphics、WebKit、Carbon（全局快捷键）；没有外部代码依赖。
+- 需求与交互研究参考了公开可见的截图和演示工具体验，感谢 [iShot](https://www.better365.cn/ishot.html)、[Screen Studio](https://screen.studio/)、[Cap](https://cap.so/)、[Arcade](https://www.arcade.software/product/interactive-demo) 与 [Supademo](https://supademo.com/features/guided-demos) 提供的产品参考。相关名称与商标归各自权利人所有；列出参考不表示关联或背书。
+- 本项目未复用上述产品的源码、反编译代码、二进制或资产。早期调研包含对本机已安装参考应用的版本、依赖及类名的只读检查；未采用反汇编或反编译实现，不将开发过程描述为严格的隔离式 clean-room。
 - API 文档：[SCScreenshotManager](https://developer.apple.com/documentation/screencapturekit/scscreenshotmanager)。
-
-前期曾只读检查已安装 iShot 的版本、依赖和类名以判断技术可分析性；项目没有采用其反汇编或反编译实现。这里记录实际开发过程，不宣称严格的隔离式 clean-room 开发。
 
 长截图与 OCR 不在当前版本范围内。

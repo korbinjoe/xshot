@@ -2,3 +2,32 @@
 dist/
 artifacts/
 .DS_Store
+
+# Xcode local build and user state
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Local environment files (keep sanitized examples)
+.env*
+!.env.example
+!.env.sample
+
+# Private keys, signing identities and local credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.p8
+*.mobileprovision
+*.provisionprofile
+*.keychain
+*.keychain-db
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+credentials.json
+secrets.json
+secrets.yml
+secrets.yaml
