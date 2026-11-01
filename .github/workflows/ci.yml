@@ -1,0 +1,37 @@
+name: Build and check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-check:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      CLANG_MODULE_CACHE_PATH: ${{ github.workspace }}/.build/ModuleCache
+      SWIFT_MODULE_CACHE_PATH: ${{ github.workspace }}/.build/ModuleCache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify ARM runner and toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          swiftc --version
+          node --version
+          mkdir -p .build/ModuleCache
+      - name: Build app (ad hoc signing)
+        run: ./scripts/build.sh
+      - name: Check offline HTML export and navigation
+        run: ./scripts/check-interactive-demo.sh

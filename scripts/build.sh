@@ -12,7 +12,9 @@ mkdir -p "$APP_DIR/Contents/Resources/Logo"
 cp "$PROJECT_DIR"/Resources/Logo/*.png "$APP_DIR/Contents/Resources/Logo/"
 codesign --force --sign - "$APP_DIR"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-if [[ -x "$LSREGISTER" ]]; then
-  "$LSREGISTER" -f "$APP_DIR"
+if [[ "${CI:-}" != "true" && -x "$LSREGISTER" ]]; then
+  if ! "$LSREGISTER" -f "$APP_DIR"; then
+    echo "Warning: app built, but Launch Services registration failed; open $APP_DIR manually." >&2
+  fi
 fi
 echo "$APP_DIR"
