@@ -70,6 +70,40 @@ import AppKit
             window.firstResponder?.keyDown(with: event)
         }
         let toolControl = window.toolbar!.items.compactMap { $0.view as? NSSegmentedControl }.first!
+        for (index, tool) in AnnotationCanvas.Tool.toolbarTools.enumerated() {
+            precondition(toolControl.label(forSegment: index) == tool.shortcut,
+                         "Each annotation tool must display the same key that selects it")
+        }
+        for (identifier, shortcut) in [("save", "⌘S"), ("copy", "⌘C")] {
+            let button = window.toolbar!.items.first { $0.itemIdentifier.rawValue == identifier }!.view as! NSButton
+            precondition(button.title.contains(shortcut), "The \(identifier) action must show its shortcut without hovering")
+        }
+        let zoomButton = descendants(window.contentView!).compactMap { $0 as? NSButton }
+            .first { $0.accessibilityLabel() == "放大画布" }!
+        precondition(window.makeFirstResponder(zoomButton))
+        zoomButton.keyDown(with: keyEvent("a", code: 0, modifiers: [], window: window))
+        precondition(canvas.tool == .arrow && toolControl.selectedSegment == AnnotationCanvas.Tool.toolbarTools.firstIndex(of: .arrow),
+                     "Tool shortcuts must still select the matching tool after a zoom control takes focus")
+        precondition(window.makeFirstResponder(zoomButton))
+        press("c", code: 8, menu: menu, window: window)
+        press("s", code: 1, menu: menu, window: window)
+        precondition(copyCount == 2 && saveCount == 2,
+                     "Native copy/save menu shortcuts must reach the screenshot while toolbar controls have focus")
+        press("z", code: 6, menu: menu, window: window)
+        precondition(!canvas.canUndo && canvas.canRedo, "Native undo must reach the canvas from toolbar focus")
+        press("z", code: 6, modifiers: [.command, .shift], menu: menu, window: window)
+        precondition(canvas.canUndo && !canvas.canRedo, "Native redo must reach the canvas from toolbar focus")
+        window.setContentSize(NSSize(width: 780, height: 450))
+        window.contentView!.superview!.layoutSubtreeIfNeeded()
+        let visibleItems = Set(window.toolbar!.visibleItems!.map { $0.itemIdentifier.rawValue })
+        precondition(["tools", "save", "copy"].allSatisfy(visibleItems.contains),
+                     "The narrowest editor must keep every tool and both output actions visible")
+        let overflowPin = window.toolbar!.items.first { $0.itemIdentifier.rawValue == "pin" }!.menuFormRepresentation!
+        precondition(app.sendAction(overflowPin.action!, to: overflowPin.target, from: overflowPin) && pinned.count == 1,
+                     "The overflow menu must retain working actions for secondary tools")
+        pinned.removeAll()
+        window.setContentSize(NSSize(width: 1080, height: 780))
+        precondition(window.makeFirstResponder(canvas))
         for (tool, code) in zip(AnnotationCanvas.Tool.drawingTools, [UInt16(15), 0, 35, 17, 46]) {
             deliver(tool.shortcut.lowercased(), code: code)
             precondition(canvas.tool == tool && toolControl.selectedSegment == AnnotationCanvas.Tool.toolbarTools.firstIndex(of: tool),
@@ -129,6 +163,12 @@ import AppKit
         canvas.textEditor!.insertText("标注文字", replacementRange: NSRange(location: NSNotFound, length: 0))
         let text = window.firstResponder as! NSTextView
         let colorBeforeTyping = canvas.inkColor
+        let textBeforeFallback = text.string
+        window.keyDown(with: keyEvent("r", code: 15, modifiers: [], window: window))
+        window.keyDown(with: keyEvent("c", code: 8, modifiers: .command, window: window))
+        precondition(canvas.tool == .text && canvas.textEditor === text && window.firstResponder === text &&
+                     text.string == textBeforeFallback && copyCount == 2,
+                     "Window fallback must leave live text, input-method focus and screenshot copy untouched")
         text.setSelectedRange(NSRange(location: (text.string as NSString).length, length: 0))
         for (characters, code) in [("r", UInt16(15)), ("a", 0), ("p", 35), ("t", 17), ("m", 46),
                                    ("1", 18), ("[", 33), ("]", 30), ("?", 44)] {
@@ -141,7 +181,7 @@ import AppKit
                      "Command-A must select text while editing an annotation")
         precondition(app.target(forAction: #selector(NSText.copy(_:))) as? NSTextView === text,
                      "Text editing must keep ownership of Command-C")
-        precondition(copyCount == 1, "Text commands must not copy the whole screenshot")
+        precondition(copyCount == 2, "Text commands must not copy the whole screenshot")
         canvas.textFontSize = 32
         canvas.inkColor = .systemBlue
         let beforeTextUndo = text.string
@@ -206,7 +246,7 @@ import AppKit
         precondition(app.applicationActions == ["hide", "hideOthers", "quit"], "Application shortcuts must reach AppKit actions")
         spy.close()
         precondition(!window.isVisible && !otherWindow.isVisible && !spy.isVisible)
-        print("PASS: screenshot tool/color/width shortcuts sync with controls, zoom/pin/undoable clear work, unfinished strokes and modifier combinations are protected; text types raptm1[]? normally; native window, application and editing shortcuts retain their responders; no desktop windows or global input")
+        print("PASS: visible tool/save/copy hints match shortcuts; toolbar focus retains tool/copy/save/history shortcuts; screenshot tool/color/width shortcuts sync with controls, zoom/pin/undoable clear work, unfinished strokes and modifier combinations are protected; text types raptm1[]? normally; native window, application and editing shortcuts retain their responders; no desktop windows or global input")
     }
 
     @MainActor private final class CloseVeto: NSObject, NSWindowDelegate {

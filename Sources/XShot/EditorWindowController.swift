@@ -58,7 +58,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         onPinImage = onPin
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         let frame = NSRect(x: 0, y: 0, width: min(1080, screen.width - 80), height: min(780, screen.height - 80))
-        let window = NSWindow(contentRect: frame,
+        let window = ScreenshotEditorWindow(contentRect: frame,
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.title = "截图标注"
@@ -70,6 +70,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         window.toolbarStyle = .unifiedCompact
         window.backgroundColor = .windowBackgroundColor
         super.init(window: window)
+        window.shortcutCanvas = canvas
         window.delegate = self
         buildInterface()
         buildToolbar()
@@ -220,10 +221,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         tools.action = #selector(selectTool(_:))
         tools.selectedSegment = AnnotationCanvas.Tool.toolbarTools.firstIndex(of: canvas.tool) ?? 0
         tools.segmentStyle = .automatic
+        tools.font = .systemFont(ofSize: 10, weight: .medium)
         tools.setAccessibilityLabel("标注工具")
         for (index, tool) in AnnotationCanvas.Tool.toolbarTools.enumerated() {
-            tools.setWidth(30, forSegment: index)
+            tools.setWidth(38, forSegment: index)
             tools.setImage(symbolImage(symbols[index], description: tool.title, size: 14), forSegment: index)
+            tools.setLabel(tool.shortcut, forSegment: index)
             tools.setToolTip("\(tool.title) · \(tool.shortcut)", forSegment: index)
         }
         colorPicker.onColorChange = { [weak self] color in
@@ -271,10 +274,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         configureIconButton(pin, symbol: "pin", label: "贴图", action: #selector(pinImage))
         pin.toolTip = "将截图悬浮在桌面 · ⇧⌘P"
         let save = NSButton()
-        configureIconButton(save, symbol: "square.and.arrow.down", label: "保存 PNG", action: #selector(saveImage))
+        configureIconButton(save, symbol: "square.and.arrow.down", label: "保存 PNG", action: #selector(saveImage), title: "保存 ⌘S")
         save.toolTip = "保存 PNG · ⌘S"
         let copy = copyButton
-        copy.title = "复制"
+        copy.title = "复制 ⌘C"
         copy.image = symbolImage("doc.on.doc", description: nil)
         copy.target = self
         copy.action = #selector(copyImage)
@@ -285,7 +288,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         copy.toolTip = "复制截图 · ⌘C"
         copy.setAccessibilityLabel("复制截图")
         copy.translatesAutoresizingMaskIntoConstraints = false
-        copy.widthAnchor.constraint(equalToConstant: 76).isActive = true
+        copy.widthAnchor.constraint(equalToConstant: 94).isActive = true
         let views: [(String, String, NSView)] = [
             ("tools", "标注工具", tools), ("color", "标注颜色", colorPicker),
             ("width", "线宽或字号", sizeControls), ("history", "编辑历史", history),
@@ -298,7 +301,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
             item.label = label
             item.paletteLabel = label
             item.view = view
-            item.visibilityPriority = key == "tools" || key == "color" || key == "copy" ? .high : .standard
+            if let button = view as? NSButton {
+                let menuItem = NSMenuItem(title: label, action: button.action, keyEquivalent: "")
+                menuItem.target = button.target
+                item.menuFormRepresentation = menuItem
+            }
+            item.visibilityPriority = ["tools", "save", "copy"].contains(key) ? .high : .standard
             toolbarItems[identifier] = item
         }
         let toolbar = NSToolbar(identifier: "XShot.Annotation")
@@ -429,7 +437,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         case .zoomOut: zoomOut()
         case .actualSize: actualPixels()
         case .fit: fitImage()
-        case .help: shortcutHelp.toggle()
+        case .help: shortcutHelp.toggleReference(fallback: canvas)
         default: return false
         }
         return true
@@ -438,7 +446,14 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     @objc private func toggleBeautification() {
         if beautyPopover.isShown { beautyPopover.performClose(nil); return }
         canvas.finishTextEditing()
-        beautyPopover.show(relativeTo: beautyButton.bounds, of: beautyButton, preferredEdge: .maxY)
+        if beautyButton.window != nil, !beautyButton.isHiddenOrHasHiddenAncestor {
+            beautyPopover.show(relativeTo: beautyButton.bounds, of: beautyButton, preferredEdge: .maxY)
+        } else {
+            // The toolbar may move this button into its overflow menu on a narrow window.
+            let y = scrollView.isFlipped ? scrollView.bounds.minY + 4 : scrollView.bounds.maxY - 28
+            let anchor = NSRect(x: scrollView.bounds.maxX - 32, y: y, width: 24, height: 24)
+            beautyPopover.show(relativeTo: anchor, of: scrollView, preferredEdge: .maxY)
+        }
     }
 
     private func applyStyle(_ style: ScreenshotStyle) {

@@ -64,6 +64,34 @@ import AppKit
     @MainActor static func descendants(_ view: NSView) -> [NSView] {
         [view] + view.subviews.flatMap { descendants($0) }
     }
+    @MainActor static func checkToolbarLayout(_ fixture: Fixture, toolsFit: Bool) {
+        fixture.view.layoutSubtreeIfNeeded()
+        let toolbar = fixture.annotation.toolbar
+        toolbar.layoutSubtreeIfNeeded()
+        precondition(fixture.view.bounds.contains(toolbar.frame), "Screenshot actions must stay on the current display")
+        let actionLabels = ["截图快捷键", "打开设置", "打开截图编辑器", "保存截图", "取消截图", "复制并完成截图"]
+        let actions = descendants(toolbar).compactMap { $0 as? NSButton }
+            .filter { actionLabels.contains($0.accessibilityLabel() ?? "") }
+        precondition(actions.count == actionLabels.count)
+        let actionFrames = actions.map { toolbar.convert($0.bounds, from: $0) }.sorted { $0.minX < $1.minX }
+        for frame in actionFrames {
+            precondition(toolbar.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame),
+                         "Every screenshot action must remain visible at \(Int(fixture.view.bounds.width)) pt")
+        }
+        for pair in zip(actionFrames, actionFrames.dropFirst()) {
+            precondition(pair.0.maxX <= pair.1.minX + 0.5, "Screenshot action buttons must not overlap")
+        }
+        if toolsFit {
+            let scroll = descendants(toolbar).compactMap { $0 as? NSScrollView }.first!
+            let row = scroll.documentView as! NSStackView
+            let visible = scroll.documentVisibleRect
+            for control in row.arrangedSubviews where !control.isHidden {
+                let frame = control.alignmentRect(forFrame: control.frame)
+                precondition(frame.minX >= visible.minX - 0.5 && frame.maxX <= visible.maxX + 0.5,
+                             "The normal screenshot toolbar must show all tool and property controls without scrolling: \(type(of: control)) \(frame), viewport \(visible), row \(row.frame)")
+            }
+        }
+    }
     static func pixels(_ image: CGImage) -> Data {
         let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
                                 bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
@@ -95,6 +123,17 @@ import AppKit
         let image = source()
         let shortcuts = Fixture(image)
         shortcuts.select()
+        let toolControl = descendants(shortcuts.annotation.toolbar).compactMap { $0 as? NSSegmentedControl }
+            .first { $0.accessibilityLabel() == "框选标注工具" }!
+        for (index, tool) in AnnotationCanvas.Tool.toolbarTools.enumerated() {
+            precondition(toolControl.label(forSegment: index) == tool.shortcut,
+                         "Each screenshot annotation tool must visibly show its activation key")
+        }
+        for (label, shortcut) in [("保存截图", "⌘S"), ("复制并完成截图", "⌘C"),
+                                  ("打开截图编辑器", "⇧⌘E"), ("取消截图", "Esc")] {
+            precondition(shortcuts.button(label).title.contains(shortcut),
+                         "Screenshot action \(label) must show its shortcut without hovering")
+        }
         func key(_ characters: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], to target: NSResponder? = nil) {
             let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
                                         timestamp: 1, windowNumber: shortcuts.window.windowNumber, context: nil,
@@ -102,6 +141,20 @@ import AppKit
                                         isARepeat: false, keyCode: code)!
             (target ?? shortcuts.view).keyDown(with: event)
         }
+        var shortcutCopies = 0, shortcutSaves = 0
+        shortcuts.annotation.onCopy = { _ in shortcutCopies += 1 }
+        shortcuts.annotation.onSave = { _ in shortcutSaves += 1 }
+        key("c", code: 8, modifiers: .command)
+        key("s", code: 1, modifiers: .command)
+        precondition(shortcutCopies == 1 && shortcutSaves == 1)
+        for modifiers in [NSEvent.ModifierFlags.option, .control, [.command, .option], [.command, .control]] {
+            key("c", code: 8, modifiers: modifiers)
+            key("s", code: 1, modifiers: modifiers)
+            key("c", code: 8, modifiers: modifiers, to: shortcuts.annotation.canvas)
+            key("s", code: 1, modifiers: modifiers, to: shortcuts.annotation.canvas)
+        }
+        precondition(shortcutCopies == 1 && shortcutSaves == 1,
+                     "Control, Option and unrelated modified combinations must not copy or save a screenshot")
         let initialSelection = shortcuts.view.selection!
         key("", code: 124)
         key("", code: 126, modifiers: .shift)
@@ -221,11 +274,24 @@ import AppKit
             isARepeat: false, keyCode: 36)!)
         precondition(copies == 3, "Enter must also finish while the annotation canvas has focus")
         fixture.view.layoutSubtreeIfNeeded()
-        precondition(fixture.view.bounds.contains(fixture.annotation.toolbar.frame))
+        checkToolbarLayout(fixture, toolsFit: true)
         if let bitmap = fixture.view.bitmapImageRepForCachingDisplay(in: fixture.view.bounds) {
             fixture.view.cacheDisplay(in: fixture.view.bounds, to: bitmap)
             try bitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent("preview.png"))
         }
+        for width in [CGFloat(640), 560] {
+            fixture.window.setContentSize(NSSize(width: width, height: 700))
+            fixture.view.needsLayout = true
+            checkToolbarLayout(fixture, toolsFit: false)
+            if let bitmap = fixture.view.bitmapImageRepForCachingDisplay(in: fixture.view.bounds) {
+                fixture.view.cacheDisplay(in: fixture.view.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])!.write(
+                    to: directory.appendingPathComponent("preview-\(Int(width))pt.png"))
+            }
+        }
+        fixture.window.setContentSize(NSSize(width: 900, height: 700))
+        fixture.view.needsLayout = true
+        checkToolbarLayout(fixture, toolsFit: true)
         fixture.annotation.onCopy = { _ in throw ImageClipboard.CopyError.writeFailed }
         fixture.annotation.copyImage()
         precondition(fixture.annotation.canvas === canvas && fixture.view.selection == selection && canvas.hasAnnotations,
@@ -288,6 +354,6 @@ import AppKit
         precondition(!fullScreen.annotation.toolbar.frame.intersects(wholeScreenButton.frame))
         fullScreen.close()
         precondition(NSApp.windows.allSatisfy { !$0.isVisible })
-        print("PASS: inline five-tool hit testing, Retina coordinates, undo/redo, protected selection, direct copy/save/Enter, default styling, editable editor handoff, full-window/offscreen alignment, stale capture cancellation, close and recording isolation; no desktop windows or global input")
+        print("PASS: visible tool/action shortcuts and modifier isolation, unclipped normal toolbar and nonoverlapping actions at 900/640/560 pt; inline five-tool hit testing, Retina coordinates, undo/redo, protected selection, direct copy/save/Enter, default styling, editable editor handoff, full-window/offscreen alignment, stale capture cancellation, close and recording isolation; no desktop windows or global input")
     }
 }

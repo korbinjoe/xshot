@@ -56,13 +56,15 @@ final class SelectionAnnotationController: NSObject {
 
         tools.segmentCount = 6
         tools.trackingMode = .selectOne
+        tools.font = .systemFont(ofSize: 10, weight: .medium)
         let symbols = ["cursorarrow", "rectangle", "arrow.up.right", "pencil.tip", "textformat", "square.grid.3x3.fill"]
         let titles = ["选择标注 / 调整截图范围"] + AnnotationCanvas.Tool.drawingTools.map(\.title)
         for index in symbols.indices {
             tools.setImage(NSImage(systemSymbolName: symbols[index], accessibilityDescription: titles[index]), forSegment: index)
             let key = index == 0 ? "V" : AnnotationCanvas.Tool.drawingTools[index - 1].shortcut
+            tools.setLabel(key, forSegment: index)
             tools.setToolTip("\(titles[index]) · \(key)", forSegment: index)
-            tools.setWidth(26, forSegment: index)
+            tools.setWidth(38, forSegment: index)
         }
         tools.selectedSegment = 0
         tools.target = self; tools.action = #selector(selectTool)
@@ -99,11 +101,11 @@ final class SelectionAnnotationController: NSObject {
         configure(undo, "", "arrow.uturn.backward", "撤销标注", #selector(undoMark))
         configure(redo, "", "arrow.uturn.forward", "重做标注", #selector(redoMark))
         configure(clear, "", "trash", "清空标注", #selector(clearMarks))
-        configure(copy, "复制 ↩", "doc.on.doc", "复制并完成截图", #selector(copyImage))
-        configure(save, "保存", "square.and.arrow.down", "保存截图", #selector(saveImage))
-        configure(edit, "编辑器", "slider.horizontal.3", "打开截图编辑器", #selector(editImage))
+        configure(copy, "复制 ⌘C", "doc.on.doc", "复制并完成截图", #selector(copyImage))
+        configure(save, "保存 ⌘S", "square.and.arrow.down", "保存截图", #selector(saveImage))
+        configure(edit, "编辑器 ⇧⌘E", "slider.horizontal.3", "打开截图编辑器", #selector(editImage))
         let cancel = NSButton()
-        configure(cancel, "取消", "xmark", "取消截图", #selector(cancelSelection))
+        configure(cancel, "取消 Esc", "xmark", "取消截图", #selector(cancelSelection))
         let preferences = NSButton()
         configure(preferences, "", "gearshape", "打开设置", #selector(openSettings))
         undo.toolTip = "撤销标注 · ⌘Z"
@@ -162,7 +164,7 @@ final class SelectionAnnotationController: NSObject {
     }
 
     func layoutToolbar(in bounds: NSRect, selection: NSRect, avoiding excluded: NSRect) {
-        let size = NSSize(width: min(560, max(0, bounds.width - 16)), height: 84)
+        let size = NSSize(width: min(640, max(0, bounds.width - 16)), height: 84)
         let x = max(8, min(selection.maxX - size.width, bounds.maxX - size.width - 8))
         var y = selection.maxY + 10
         if y + size.height > bounds.maxY - 8 { y = selection.minY - size.height - 10 }

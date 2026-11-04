@@ -91,7 +91,7 @@ import AppKit
         precondition(copy.title == "已复制" && banner(in: content) != nil,
                      "An old timeout must not dismiss a later copy confirmation")
         pump(1.7)
-        precondition(copy.title == "复制" && banner(in: content) == nil,
+        precondition(copy.title == "复制 ⌘C" && banner(in: content) == nil,
                      "Copy confirmation must disappear and restore the button")
 
         let pin = PinWindowController(image: document.renderedImage()!, pasteboard: pasteboard)
@@ -120,7 +120,7 @@ import AppKit
         let feedback = CopyFeedback()
         feedback.show(in: content, button: copy)
         feedback.show(in: content, button: copy, error: "请重试")
-        precondition(copy.title == "复制" && banner(in: content)!.accessibilityLabel()!.contains("复制失败"),
+        precondition(copy.title == "复制 ⌘C" && banner(in: content)!.accessibilityLabel()!.contains("复制失败"),
                      "A failed copy must clear any previous success state")
         feedback.dismiss()
         editor.windowWillClose(Notification(name: NSWindow.willCloseNotification))

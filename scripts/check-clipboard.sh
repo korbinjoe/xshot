@@ -8,6 +8,7 @@ swiftc -swift-version 5 -target arm64-apple-macos14.0 -framework AppKit \
   "$PROJECT_DIR/Sources/XShot/AppSettings.swift" \
   "$PROJECT_DIR/Sources/XShot/AnnotationCanvas.swift" \
   "$PROJECT_DIR/Sources/XShot/ScreenshotShortcuts.swift" \
+  "$PROJECT_DIR/Sources/XShot/ScreenshotEditorWindow.swift" \
   "$PROJECT_DIR/Sources/XShot/AnnotationColorPicker.swift" \
   "$PROJECT_DIR/Sources/XShot/ScreenshotStyle.swift" \
   "$PROJECT_DIR/Sources/XShot/StyledCanvasDocument.swift" \
